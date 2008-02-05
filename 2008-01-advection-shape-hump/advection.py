@@ -1,22 +1,3 @@
-# Hedge - the Hybrid'n'Easy DG Environment
-# Copyright (C) 2007 Andreas Kloeckner
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-
-
-
 from __future__ import division
 import pylinear.array as num
 import pylinear.computation as comp
@@ -121,7 +102,6 @@ def make_corrugated_rect_mesh(a=(0,0), b=(1,1), max_area=0.1,
     def wrapped_boundary_tagger(fvi, el, fn):
         btag = marker2tag[fvi2fm[frozenset(fvi)]]
         if btag in periodic_tags:
-            print el.face_normals[fn], btag, fvi2fm[frozenset(fvi)]
             return [btag]
         else:
             return [btag] + boundary_tagger(fvi, el, fn)
@@ -163,10 +143,10 @@ def main() :
             #return 0
 
     def u_analytic(x, t):
-        return f((a*x/norm_a+t*norm_a))
+        return f((-v*x/norm_a+t*norm_a))
 
     def boundary_tagger(vertices, el, face_nr):
-        if el.face_normals[face_nr] * a > 0:
+        if el.face_normals[face_nr] * v <= 0:
             return ["inflow"]
         else:
             return ["outflow"]
@@ -177,7 +157,7 @@ def main() :
 
     job = Job("mesh")
     if dim == 2:
-        a = num.array([-1,0])
+        v = num.array([1,0])
         if pcon.is_head_rank:
             from hedge.mesh import \
                     make_disk_mesh, \
@@ -201,10 +181,10 @@ def main() :
                         boundary_tagger=boundary_tagger,
                         periodicity=(True, False),
                         )
-            if True:
+            if False:
                 mesh = make_rect_mesh(
-                        (-0.5, -0.5),
-                        (5, 0.5),
+                        (-0.5, -1),
+                        (5, 1),
                         max_area=0.3,
                         boundary_tagger=boundary_tagger,
                         periodicity=(True, False),
@@ -221,14 +201,14 @@ def main() :
                         return area > 0.05
 
                 mesh = make_rect_mesh(
-                        (-0.5, -1),
-                        (5, 1),
+                        (-0.5, -1.5),
+                        (5, 1.5),
                         refine_func=refine_func,
                         boundary_tagger=boundary_tagger,
                         periodicity=(True, False),
                         subdivisions=(10,5),
                         )
-            if False:
+            if True:
                 mesh = make_corrugated_rect_mesh(
                         (-0.5, -0.5),
                         (0.5, 0.5),
@@ -237,7 +217,7 @@ def main() :
 
         el_class = TriangularElement
     elif dim == 3:
-        a = num.array([0,0,0.3])
+        v = num.array([0,0,0.3])
         if pcon.is_head_rank:
             from hedge.mesh import make_cylinder_mesh, make_ball_mesh, make_box_mesh
 
@@ -252,7 +232,7 @@ def main() :
     else:
         raise RuntimeError, "bad number of dimensions"
 
-    norm_a = comp.norm_2(a)
+    norm_a = comp.norm_2(v)
 
     if pcon.is_head_rank:
         mesh_data = pcon.distribute_mesh(mesh)
@@ -284,10 +264,10 @@ def main() :
             TimeConstantGivenFunction, \
             TimeDependentGivenFunction
     from hedge.operators import StrongAdvectionOperator, WeakAdvectionOperator
-    op = StrongAdvectionOperator(discr, a, 
+    op = StrongAdvectionOperator(discr, v, 
             inflow_u=TimeConstantGivenFunction(ConstantGivenFunction()),
             #inflow_u=TimeDependentGivenFunction(u_analytic)),
-            flux_type="lf")
+            flux_type="upwind")
 
     #from sizer import scanner
     #objs = scanner.Objects()
@@ -308,7 +288,7 @@ def main() :
 
     #u = discr.interpolate_volume_function(lambda x: u_analytic(x, 0))
     u = discr.interpolate_volume_function(sf)
-    u /= integral(discr, u)
+    #u /= integral(discr, u)
 
     stepper = RK4TimeStepper()
 
@@ -347,6 +327,7 @@ def main() :
             visf = vis.make_file("fld-%04d" % step)
             vis.add_data(visf, [
                         ("u", u), 
+                        ("inflow", ones_on_boundary(discr, "inflow")), 
                         #("u_true", u_true), 
                         ], 
                         #expressions=[("error", "u-u_true")]
