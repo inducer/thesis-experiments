@@ -181,11 +181,11 @@ def main() :
                         boundary_tagger=boundary_tagger,
                         periodicity=(True, False),
                         )
-            if False:
+            if True:
                 mesh = make_rect_mesh(
-                        (-0.5, -1),
-                        (5, 1),
-                        max_area=0.3,
+                        (-0.5, -0.5),
+                        (-0.5+2, 0.5),
+                        max_area=0.02,
                         boundary_tagger=boundary_tagger,
                         periodicity=(True, False),
                         subdivisions=(10,5),
@@ -208,7 +208,7 @@ def main() :
                         periodicity=(True, False),
                         subdivisions=(10,5),
                         )
-            if True:
+            if False:
                 mesh = make_corrugated_rect_mesh(
                         (-0.5, -0.5),
                         (0.5, 0.5),
