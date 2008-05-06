@@ -240,9 +240,10 @@ def main() :
         mesh_data = pcon.receive_mesh()
     job.done()
 
+    order = 6
     job = Job("discretization")
     mesh_data = mesh_data.reordered_by("cuthill")
-    discr = pcon.make_discretization(mesh_data, el_class(7))
+    discr = pcon.make_discretization(mesh_data, el_class(order))
     vis_discr = discr
     job.done()
 
@@ -275,20 +276,21 @@ def main() :
     #code.interact(local = {'objs': objs})
 
     from pyrticle._internal import ShapeFunction
-    sf = ShapeFunction(0.5*min_vertex_distance(discr), 2)
+    sf = ShapeFunction(5*min_vertex_distance(discr), dimensions=2, alpha=2)
 
     def gauss_hump(x):
         from math import exp
-        rsquared = (x*x)/(0.1**2)
+        rsquared = (x*x)/(0.8**2)
         return exp(-rsquared)
     def gauss2_hump(x):
         from math import exp
-        rsquared = (x*x)/(0.1**2)
+        rsquared = (x*x)/(1**2)
         return exp(-rsquared)-0.5*exp(-rsquared/2)
 
     #u = discr.interpolate_volume_function(lambda x: u_analytic(x, 0))
     u = discr.interpolate_volume_function(sf)
-    #u /= integral(discr, u)
+    #u = discr.interpolate_volume_function(gauss_hump)
+    u /= integral(discr, u)
 
     stepper = RK4TimeStepper()
 
@@ -313,24 +315,30 @@ def main() :
     logmgr.add_quantity(Integral(VariableGetter(locals(), "u"), discr))
     logmgr.add_quantity(L1Norm(VariableGetter(locals(), "u"), discr))
     logmgr.add_quantity(L2Norm(VariableGetter(locals(), "u"), discr))
+    #logmgr.add_quantity(L2Norm(lambda: u-u_true, discr, "l2_err"))
 
     logmgr.add_watches(["step.max", "t_sim.max", "l2_u", "t_step.max"])
 
     # timestep loop -----------------------------------------------------------
     for step in range(nsteps):
-        logmgr.tick()
-
         t = step*dt
 
-        if step % 20 == 0:
+        #u_true = discr.interpolate_volume_function(lambda x: sf(x-t*v))
+
+        logmgr.tick()
+
+        if step % 1 == 0:
             vis_timer.start()
             visf = vis.make_file("fld-%04d" % step)
             vis.add_data(visf, [
                         ("u", u), 
-                        ("inflow", ones_on_boundary(discr, "inflow")), 
+                        #("inflow", ones_on_boundary(discr, "inflow")), 
                         #("u_true", u_true), 
+                        #("diff", u-u_true), 
                         ], 
-                        #expressions=[("error", "u-u_true")]
+                        expressions=[
+                            ("logu", "log(abs(u)+1e-15)")
+                            ],
                         time=t, 
                         step=step
                         )
@@ -339,8 +347,6 @@ def main() :
 
         u = stepper(u, t, dt, op.rhs)
 
-        #u_true = discr.interpolate_volume_function(
-                #lambda x: u_analytic(t, x))
 
     vis.close()
 
