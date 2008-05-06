@@ -1,5 +1,6 @@
 *~
 .*.sw[po]
+.swp
 *.dat
 *.pyc
 build
@@ -22,3 +23,7 @@ doc/user-reference
 doc/dev-reference
 *.poly
 *.node
+*.BACKUP*
+*.REMOTE*
+*.LOCAL*
+*.BASE*
