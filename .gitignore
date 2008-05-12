@@ -2,6 +2,7 @@
 .*.sw[po]
 .swp
 *.dat
+*.dat-journal
 *.pyc
 build
 *.prof

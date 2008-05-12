@@ -26,7 +26,6 @@ import numpy.linalg as la
 
 def main() :
     from hedge.timestep import RK4TimeStepper
-    from hedge.discretization import Discretization, ones_on_boundary, integral
     from hedge.visualization import SiloVisualizer, VtkVisualizer
     from hedge.tools import mem_checkpoint
     from pytools.stopwatch import Job
@@ -54,7 +53,7 @@ def main() :
 
     pcon = guess_parallelization_context()
 
-    dim = 1
+    dim = 3
 
     job = Job("mesh")
     if dim == 1:
@@ -62,10 +61,6 @@ def main() :
         if pcon.is_head_rank:
             from hedge.mesh import make_uniform_1d_mesh
             mesh = make_uniform_1d_mesh(-2, 5, 10, periodic=True)
-
-        from hedge.element import IntervalElement
-        el_class = IntervalElement
-
     elif dim == 2:
         v = numpy.array([2,0])
         if pcon.is_head_rank:
@@ -100,9 +95,6 @@ def main() :
                         periodicity=(True, False),
                         subdivisions=(10,5),
                         )
-
-        from hedge.element import TriangularElement
-        el_class = TriangularElement
     elif dim == 3:
         v = numpy.array([0,0,0.3])
         if pcon.is_head_rank:
@@ -115,9 +107,6 @@ def main() :
             #mesh = make_box_mesh(max_volume=0.01, boundary_tagger=boundary_tagger)
             #mesh = make_ball_mesh(boundary_tagger=boundary_tagger)
             #mesh = make_cylinder_mesh(max_volume=0.01, boundary_tagger=boundary_tagger)
-
-        from hedge.element import TetrahedralElement
-        el_class = TetrahedralElement
     else:
         raise RuntimeError, "bad number of dimensions"
 
@@ -131,7 +120,9 @@ def main() :
 
     job = Job("discretization")
     #mesh_data = mesh_data.reordered_by("cuthill")
-    discr = pcon.make_discretization(mesh_data, el_class(8))
+    from hedge.cuda import CudaDiscretization
+    discr = pcon.make_discretization(mesh_data, order=5, 
+            discr_class=CudaDiscretization)
     vis_discr = discr
     job.done()
 
@@ -170,7 +161,6 @@ def main() :
 
     #u = discr.interpolate_volume_function(lambda x: u_analytic(x, 0))
     u = discr.interpolate_volume_function(gauss_hump)
-    u /= integral(discr, u)
 
     # timestep setup ----------------------------------------------------------
     stepper = RK4TimeStepper()
