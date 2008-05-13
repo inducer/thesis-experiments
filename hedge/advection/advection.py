@@ -20,6 +20,95 @@
 from __future__ import division
 import numpy
 import numpy.linalg as la
+import hedge.operators
+from pytools import memoize_method
+
+
+
+
+class AdvectionOperatorBase(hedge.operators.TimeDependentOperator):
+    def __init__(self, discr, v, 
+            inflow_tag="inflow",
+            inflow_u=hedge.data.make_tdep_constant(0),
+            outflow_tag="outflow",
+            flux_type="central",
+            ):
+        self.discr = discr
+        self.v = v
+        self.inflow_tag = inflow_tag
+        self.inflow_u = inflow_u
+        self.outflow_tag = outflow_tag
+        self.flux_type = flux_type
+
+        from hedge.mesh import check_bc_coverage
+        check_bc_coverage(discr.mesh, [inflow_tag, outflow_tag])
+
+        self.nabla = discr.nabla
+        self.mass = discr.mass_operator
+        self.m_inv = discr.inverse_mass_operator
+        self.minv_st = discr.minv_stiffness_t
+
+        self.flux = discr.get_flux_operator(self.get_flux())
+
+    flux_types = [
+            "central",
+            "upwind",
+            "lf"
+            ]
+
+    def get_weak_flux(self):
+        from hedge.flux import make_normal, FluxScalarPlaceholder, IfPositive
+
+        u = FluxScalarPlaceholder(0)
+        normal = make_normal(self.discr.dimensions)
+
+        if self.flux_type == "central":
+            return u.avg*numpy.dot(normal, self.v)
+        elif self.flux_type == "lf":
+            return u.avg*numpy.dot(normal, self.v) \
+                    + 0.5*la.norm(self.v)*(u.int - u.ext)
+        elif self.flux_type == "upwind":
+            return (numpy.dot(normal, self.v)*
+                    IfPositive(numpy.dot(normal, self.v),
+                        u.int, # outflow
+                        u.ext, # inflow
+                        ))
+        else:
+            raise ValueError, "invalid flux type"
+
+    def max_eigenvalue(self):
+        return la.norm(self.v)
+
+
+
+
+class StrongAdvectionOperator(AdvectionOperatorBase):
+    def get_flux(self):
+        from hedge.flux import make_normal, FluxScalarPlaceholder
+
+        u = FluxScalarPlaceholder(0)
+        normal = make_normal(self.discr.dimensions)
+
+        return u.int * numpy.dot(normal, self.v) - self.get_weak_flux()
+
+    @memoize_method
+    def op_template(self):
+        from hedge.optemplate import Field, BoundaryPair
+        u = Field("u")
+        bc_in = Field("bc_in")
+
+        return -numpy.dot(self.v, self.nabla*u) + self.m_inv*(
+                self.flux * u
+                + self.flux * BoundaryPair(u, bc_in, self.inflow_tag)
+                #+ self.flux * BoundaryPair(u, bc_out, self.outflow_tag)
+                )
+
+    def rhs(self, t, u):
+        opt = self.op_template()
+        bc_in = self.inflow_u.boundary_interpolant(t, self.discr, self.inflow_tag)
+        #bc_out = 0.5*self.discr.boundarize_volume_field(u, self.outflow_tag)
+
+        return self.discr.execute(self.op_template(), u=u, bc_in=bc_in)
 
 
 
@@ -120,9 +209,11 @@ def main() :
 
     job = Job("discretization")
     #mesh_data = mesh_data.reordered_by("cuthill")
-    from hedge.cuda import CudaDiscretization
+    #from hedge.cuda import CudaDiscretization
+    from hedge.discr_precompiled import Discretization
     discr = pcon.make_discretization(mesh_data, order=5, 
-            discr_class=CudaDiscretization)
+            discr_class=Discretization
+            )
     vis_discr = discr
     job.done()
 
@@ -134,8 +225,7 @@ def main() :
             ConstantGivenFunction, \
             TimeConstantGivenFunction, \
             TimeDependentGivenFunction
-    from hedge.operators import StrongAdvectionOperator, WeakAdvectionOperator
-    op = WeakAdvectionOperator(discr, v, 
+    op = StrongAdvectionOperator(discr, v, 
             inflow_u=TimeConstantGivenFunction(ConstantGivenFunction()),
             #inflow_u=TimeDependentGivenFunction(u_analytic)),
             flux_type="upwind")
@@ -191,13 +281,14 @@ def main() :
     logmgr.add_quantity(vis_timer)
     stepper.add_instrumentation(logmgr)
 
-    from hedge.log import Integral, LpNorm
-    u_getter = lambda: u
-    logmgr.add_quantity(Integral(u_getter, discr, name="int_u"))
-    logmgr.add_quantity(LpNorm(u_getter, discr, p=1, name="l1_u"))
-    logmgr.add_quantity(LpNorm(u_getter, discr, name="l2_u"))
+    if False:
+        from hedge.log import Integral, LpNorm
+        u_getter = lambda: u
+        logmgr.add_quantity(Integral(u_getter, discr, name="int_u"))
+        logmgr.add_quantity(LpNorm(u_getter, discr, p=1, name="l1_u"))
+        logmgr.add_quantity(LpNorm(u_getter, discr, name="l2_u"))
 
-    logmgr.add_watches(["step.max", "t_sim.max", "l2_u", "t_step.max"])
+    logmgr.add_watches(["step.max", "t_sim.max", "t_step.max"])
 
     # timestep loop -----------------------------------------------------------
     def logmap(x, low_exp=15):
