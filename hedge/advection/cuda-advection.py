@@ -121,7 +121,11 @@ def main() :
 
     job = Job("discretization")
     #mesh_data = mesh_data.reordered_by("cuthill")
-    discr = pcon.make_discretization(mesh_data, order=4)
+    from hedge.cuda import CudaDiscretization
+    from hedge.discr_precompiled import Discretization
+    discr = pcon.make_discretization(mesh_data, order=4, 
+            discr_class=CudaDiscretization
+            )
     vis_discr = discr
     job.done()
 
@@ -173,32 +177,6 @@ def main() :
                 dt,
                 nsteps)
 
-    # diagnostics setup -------------------------------------------------------
-    from pytools.log import LogManager, \
-            add_general_quantities, \
-            add_simulation_quantities, \
-            add_run_info
-
-    logmgr = LogManager("advection.dat", "w", pcon.communicator)
-    add_run_info(logmgr)
-    add_general_quantities(logmgr)
-    add_simulation_quantities(logmgr, dt)
-    discr.add_instrumentation(logmgr)
-
-    from pytools.log import IntervalTimer
-    vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
-    logmgr.add_quantity(vis_timer)
-    stepper.add_instrumentation(logmgr)
-
-    if False:
-        from hedge.log import Integral, LpNorm
-        u_getter = lambda: u
-        logmgr.add_quantity(Integral(u_getter, discr, name="int_u"))
-        logmgr.add_quantity(LpNorm(u_getter, discr, p=1, name="l1_u"))
-        logmgr.add_quantity(LpNorm(u_getter, discr, name="l2_u"))
-
-    logmgr.add_watches(["step.max", "t_sim.max", "t_step.max"])
-
     # timestep loop -----------------------------------------------------------
     def logmap(x, low_exp=15):
         return 0.1*numpy.log10(numpy.abs(x)+1e-15)
@@ -207,12 +185,9 @@ def main() :
     filter = Filter(discr, ExponentialFilterResponseFunction(0.97, 3))
 
     for step in xrange(nsteps):
-        logmgr.tick()
-
         t = step*dt
 
-        if step % 5 == 0:
-            vis_timer.start()
+        if False:
             visf = vis.make_file("fld-%04d" % step)
             vis.add_data(visf, [
                         ("u", u), 
@@ -224,7 +199,6 @@ def main() :
                         step=step
                         )
             visf.close()
-            vis_timer.stop()
 
 
         #u = filter(stepper(u, t, dt, op.rhs))
@@ -237,8 +211,7 @@ def main() :
 
     vis.close()
 
-    logmgr.tick()
-    logmgr.save()
+
 
 
 if __name__ == "__main__":
