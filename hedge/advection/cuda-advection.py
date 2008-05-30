@@ -127,11 +127,9 @@ def main() :
     discr = pcon.make_discretization(mesh_data, order=4, 
             discr_class=Discretization
             )
-    vis_discr = discr
     job.done()
 
-    vis = SiloVisualizer(vis_discr, pcon)
-    #vis = VtkVisualizer(vis_discr, pcon, "fld")
+    vis = SiloVisualizer(discr, pcon)
 
     # operator setup ----------------------------------------------------------
     from hedge.data import \
@@ -184,20 +182,13 @@ def main() :
                 nsteps)
 
     # timestep loop -----------------------------------------------------------
-    def logmap(x, low_exp=15):
-        return 0.1*numpy.log10(numpy.abs(x)+1e-15)
-
-    from hedge.discretization import Filter, ExponentialFilterResponseFunction
-    filter = Filter(discr, ExponentialFilterResponseFunction(0.97, 3))
-
     for step in xrange(nsteps):
         t = step*dt
 
-        if False:
+        if True:
             visf = vis.make_file("fld-%04d" % step)
             vis.add_data(visf, [
-                        ("u", u), 
-                        ("logu", logmap(u)), 
+                        ("u", discr.volume_from_gpu(u, check=True)), 
                         #("u_true", u_true), 
                         ], 
                         #expressions=[("error", "u-u_true")]
@@ -206,13 +197,7 @@ def main() :
                         )
             visf.close()
 
-        #u = filter(stepper(u, t, dt, op.rhs))
         u = stepper(u, t, dt, op.rhs)
-        #if step % 1 == 0:
-            #u = filter(u)
-
-        #u_true = discr.interpolate_volume_function(
-                #lambda x: u_analytic(t, x))
 
     vis.close()
 
