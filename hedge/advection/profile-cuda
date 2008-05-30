@@ -1,0 +1,4 @@
+export CUDA_PROFILE='1'
+export CUDA_PROFILE_CONFIG='temp_cuda_profiler.conf'
+export CUDA_PROFILE_CSV='1'
+export CUDA_PROFILE_LOG='temp_cuda_profiler_0.csv'

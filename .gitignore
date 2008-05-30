@@ -28,3 +28,6 @@ doc/dev-reference
 *.REMOTE*
 *.LOCAL*
 *.BASE*
+*.log
+*.csv
+out

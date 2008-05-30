@@ -1,3 +1,4 @@
+#! /usr/bin/env python
 # Hedge - the Hybrid'n'Easy DG Environment
 # Copyright (C) 2007 Andreas Kloeckner
 #
@@ -121,10 +122,10 @@ def main() :
 
     job = Job("discretization")
     #mesh_data = mesh_data.reordered_by("cuthill")
-    from hedge.cuda import CudaDiscretization
-    from hedge.discr_precompiled import Discretization
+    from hedge.cuda import Discretization
+    #from hedge.discr_precompiled import Discretization
     discr = pcon.make_discretization(mesh_data, order=4, 
-            discr_class=CudaDiscretization
+            discr_class=Discretization
             )
     vis_discr = discr
     job.done()
@@ -155,6 +156,10 @@ def main() :
         rsquared = (x*x)/(0.1**2)
         return exp(-rsquared)-0.5*exp(-rsquared/2)
 
+    def wild_trig(x, el):
+        from math import sin, cos
+        return sin(x[0])*cos(3*x[1])*sin(2*x[2]) + sin(el.id)
+
     hump_width = 2
     def c_inf_hump(x, el):
         if abs(x) > hump_width:
@@ -163,7 +168,8 @@ def main() :
             exp(-1/(x-hump_width)**2)* exp(-1/(x+hump_width)**2)
 
     #u = discr.interpolate_volume_function(lambda x: u_analytic(x, 0))
-    u = discr.interpolate_volume_function(gauss_hump)
+    #u = discr.interpolate_volume_function(gauss_hump)
+    u = discr.interpolate_volume_function(wild_trig)
 
     # timestep setup ----------------------------------------------------------
     stepper = RK4TimeStepper()
@@ -199,7 +205,6 @@ def main() :
                         step=step
                         )
             visf.close()
-
 
         #u = filter(stepper(u, t, dt, op.rhs))
         u = stepper(u, t, dt, op.rhs)

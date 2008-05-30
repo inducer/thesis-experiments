@@ -103,7 +103,7 @@ def main() :
         if pcon.is_head_rank:
             from hedge.mesh import make_cylinder_mesh, make_ball_mesh, make_box_mesh
 
-            mesh = make_cylinder_mesh(max_volume=0.004, boundary_tagger=boundary_tagger,
+            mesh = make_cylinder_mesh(max_volume=0.00008, boundary_tagger=boundary_tagger,
                     periodic=False, radial_subdivisions=32)
             #mesh = make_box_mesh(dimensions=(1,1,2*pi/3), max_volume=0.01,
                     #boundary_tagger=boundary_tagger)
@@ -195,13 +195,14 @@ def main() :
     logmgr.add_quantity(vis_timer)
     stepper.add_instrumentation(logmgr)
 
-    from hedge.log import Integral, LpNorm
-    u_getter = lambda: u
-    logmgr.add_quantity(Integral(u_getter, discr, name="int_u"))
-    logmgr.add_quantity(LpNorm(u_getter, discr, p=1, name="l1_u"))
-    logmgr.add_quantity(LpNorm(u_getter, discr, name="l2_u"))
+    if False:
+        from hedge.log import Integral, LpNorm
+        u_getter = lambda: u
+        logmgr.add_quantity(Integral(u_getter, discr, name="int_u"))
+        logmgr.add_quantity(LpNorm(u_getter, discr, p=1, name="l1_u"))
+        logmgr.add_quantity(LpNorm(u_getter, discr, name="l2_u"))
 
-    logmgr.add_watches(["step.max", "t_sim.max", "l2_u", "t_step.max"])
+    logmgr.add_watches(["step.max", "t_sim.max", "t_step.max"])
 
     # timestep loop -----------------------------------------------------------
     def logmap(x, low_exp=15):
@@ -210,21 +211,20 @@ def main() :
     from hedge.discretization import Filter, ExponentialFilterResponseFunction
     filter = Filter(discr, ExponentialFilterResponseFunction(0.97, 3))
 
-    print op.op_template().pp_optemplate
     for step in xrange(nsteps):
         logmgr.tick()
 
         t = step*dt
 
-        if step % 1 == 0:
-
+        if step % 5 == 0:
             vis_timer.start()
             visf = vis.make_file("fld-%04d" % step)
             vis.add_data(visf, [
                         ("u", u), 
                         ("logu", logmap(u)), 
+                        #("u_true", u_true), 
                         ], 
-                        #expressions=[("error", "u-u_true")],
+                        #expressions=[("error", "u-u_true")]
                         time=t, 
                         step=step
                         )
