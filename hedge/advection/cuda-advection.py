@@ -102,7 +102,7 @@ def main() :
         if pcon.is_head_rank:
             from hedge.mesh import make_cylinder_mesh, make_ball_mesh, make_box_mesh
 
-            mesh = make_cylinder_mesh(max_volume=0.004, boundary_tagger=boundary_tagger,
+            mesh = make_cylinder_mesh(max_volume=0.0005, boundary_tagger=boundary_tagger,
                     periodic=False, radial_subdivisions=32)
             #mesh = make_box_mesh(dimensions=(1,1,2*pi/3), max_volume=0.01,
                     #boundary_tagger=boundary_tagger)
@@ -146,9 +146,10 @@ def main() :
     #sf = ShapeFunction(1, 2, alpha=1)
 
     def gauss_hump(x, el):
-        from math import exp
+        from math import exp, sin
         rsquared = numpy.dot(x, x)/(0.3**2)
-        return exp(-rsquared)
+        return exp(-rsquared)-2
+
     def gauss2_hump(x, el):
         from math import exp
         rsquared = (x*x)/(0.1**2)
@@ -156,7 +157,7 @@ def main() :
 
     def wild_trig(x, el):
         from math import sin, cos
-        return sin(x[0])*cos(3*x[1])*sin(2*x[2]) + sin(el.id)
+        return sin(17*x[0])*cos(22*x[1])*sin(15*x[2]) + sin(el.id)
 
     hump_width = 2
     def c_inf_hump(x, el):
@@ -166,8 +167,8 @@ def main() :
             exp(-1/(x-hump_width)**2)* exp(-1/(x+hump_width)**2)
 
     #u = discr.interpolate_volume_function(lambda x: u_analytic(x, 0))
-    #u = discr.interpolate_volume_function(gauss_hump)
-    u = discr.interpolate_volume_function(wild_trig)
+    u = discr.interpolate_volume_function(gauss_hump)
+    #u = discr.interpolate_volume_function(wild_trig)
 
     # timestep setup ----------------------------------------------------------
     stepper = RK4TimeStepper()
@@ -181,14 +182,45 @@ def main() :
                 dt,
                 nsteps)
 
+    # diagnostics setup -------------------------------------------------------
+    from pytools.log import LogManager, \
+            add_general_quantities, \
+            add_simulation_quantities, \
+            add_run_info
+
+    logmgr = LogManager("advection.dat", "w", pcon.communicator)
+    add_run_info(logmgr)
+    add_general_quantities(logmgr)
+    add_simulation_quantities(logmgr, dt)
+    discr.add_instrumentation(logmgr)
+
+    from pytools.log import IntervalTimer
+    vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
+    logmgr.add_quantity(vis_timer)
+    stepper.add_instrumentation(logmgr)
+
+    from hedge.log import Integral, LpNorm
+    u_getter = lambda: u
+    #logmgr.add_quantity(Integral(u_getter, discr, name="int_u"))
+    #logmgr.add_quantity(LpNorm(u_getter, discr, p=1, name="l1_u"))
+    #logmgr.add_quantity(LpNorm(u_getter, discr, name="l2_u"))
+
+    logmgr.add_watches(["step.max", "t_sim.max", "t_step.max"])
+
     # timestep loop -----------------------------------------------------------
     for step in xrange(nsteps):
+        logmgr.tick()
         t = step*dt
 
-        if True:
+        if step % 100 == 0:
+            if hasattr(discr, "volume_from_gpu"):
+                get_vec = discr.volume_from_gpu
+            else:
+                get_vec = lambda x: x
             visf = vis.make_file("fld-%04d" % step)
             vis.add_data(visf, [
-                        ("u", discr.volume_from_gpu(u, check=True)), 
+                        ("u", get_vec(u)), 
+                        #("u", u), 
                         #("u_true", u_true), 
                         ], 
                         #expressions=[("error", "u-u_true")]
