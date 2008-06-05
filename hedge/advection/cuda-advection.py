@@ -102,7 +102,7 @@ def main() :
         if pcon.is_head_rank:
             from hedge.mesh import make_cylinder_mesh, make_ball_mesh, make_box_mesh
 
-            mesh = make_cylinder_mesh(max_volume=0.0005, boundary_tagger=boundary_tagger,
+            mesh = make_cylinder_mesh(max_volume=0.0001, boundary_tagger=boundary_tagger,
                     periodic=False, radial_subdivisions=32)
             #mesh = make_box_mesh(dimensions=(1,1,2*pi/3), max_volume=0.01,
                     #boundary_tagger=boundary_tagger)
@@ -205,7 +205,7 @@ def main() :
     #logmgr.add_quantity(LpNorm(u_getter, discr, p=1, name="l1_u"))
     #logmgr.add_quantity(LpNorm(u_getter, discr, name="l2_u"))
 
-    logmgr.add_watches(["step.max", "t_sim.max", "t_step.max"])
+    logmgr.add_watches(["step", "t_sim", "t_step", "t_diff_op+t_inner_flux"])
 
     # timestep loop -----------------------------------------------------------
     for step in xrange(nsteps):
