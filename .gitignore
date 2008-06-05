@@ -31,3 +31,4 @@ doc/dev-reference
 *.log
 *.csv
 out
+el_faces.txt
