@@ -102,7 +102,7 @@ def main() :
         if pcon.is_head_rank:
             from hedge.mesh import make_cylinder_mesh, make_ball_mesh, make_box_mesh
 
-            mesh = make_cylinder_mesh(max_volume=0.0001, boundary_tagger=boundary_tagger,
+            mesh = make_cylinder_mesh(max_volume=0.005, boundary_tagger=boundary_tagger,
                     periodic=False, radial_subdivisions=32)
             #mesh = make_box_mesh(dimensions=(1,1,2*pi/3), max_volume=0.01,
                     #boundary_tagger=boundary_tagger)
@@ -125,7 +125,7 @@ def main() :
     from hedge.cuda import Discretization
     #from hedge.discr_precompiled import Discretization
     discr = pcon.make_discretization(mesh_data, order=4, 
-            discr_class=Discretization
+            discr_class=Discretization, #debug=True
             )
     job.done()
 
@@ -167,8 +167,8 @@ def main() :
             exp(-1/(x-hump_width)**2)* exp(-1/(x+hump_width)**2)
 
     #u = discr.interpolate_volume_function(lambda x: u_analytic(x, 0))
-    u = discr.interpolate_volume_function(gauss_hump)
-    #u = discr.interpolate_volume_function(wild_trig)
+    #u = discr.interpolate_volume_function(gauss_hump)
+    u = discr.interpolate_volume_function(wild_trig)
 
     # timestep setup ----------------------------------------------------------
     stepper = RK4TimeStepper()
