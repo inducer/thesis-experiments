@@ -3,7 +3,7 @@
 .swp
 *.dat
 *.dat-journal
-*.pyc
+*.py[co]
 build
 *.prof
 siteconf.py

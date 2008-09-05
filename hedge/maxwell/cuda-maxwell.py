@@ -75,11 +75,9 @@ def main():
         else:
             periodicity = None
         mode = RectangularCavityMode(epsilon, mu, (1,2,2))
-        r_sol = RealPartAdapter(mode)
-        c_sol = SplitComplexAdapter(mode)
 
         if pcon.is_head_rank:
-            mesh = make_box_mesh(max_volume=0.01, periodicity=periodicity)
+            mesh = make_box_mesh(max_volume=0.001, periodicity=periodicity)
 
     if pcon.is_head_rank:
         mesh_data = pcon.distribute_mesh(mesh)
@@ -97,7 +95,8 @@ def main():
     vis = SiloVisualizer(discr, pcon)
 
     mode.set_time(0)
-    fields = to_obj_array(discr.interpolate_volume_function(r_sol))
+    fields = discr.volume_to_gpu(to_obj_array(mode(discr)
+        .real.astype(discr.default_scalar_type)))
     op = MaxwellOperator(discr, epsilon, mu, upwind_alpha=1)
 
     dt = discr.dt_factor(op.max_eigenvalue())
@@ -118,42 +117,66 @@ def main():
     add_run_info(logmgr)
     add_general_quantities(logmgr)
     add_simulation_quantities(logmgr, dt)
-    discr.add_instrumentation(logmgr)
-    stepper.add_instrumentation(logmgr)
+    #discr.add_instrumentation(logmgr)
+    #stepper.add_instrumentation(logmgr)
 
-    logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", "t_diff_op+t_inner_flux"])
+    logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
+        #"t_diff_op+t_inner_flux",
+        #"n_flops/(t_diff_op+t_inner_flux)"
+        ])
     # timestep loop -------------------------------------------------------
-    t = 0
-    for step in range(nsteps):
-        logmgr.tick()
 
-        if step % 10 == 0:
-            e, h = op.split_eh(fields)
-            visf = vis.make_file("em-%d-%04d" % (order, step))
-            vis.add_data(visf,
-                    [ ("e", 
-                        #e
-                        discr.volume_from_gpu(e)
-                        ), 
-                        ("h", 
-                            #h
-                            discr.volume_from_gpu(h)
+    # make sure compilations are done
+    op.rhs(0, fields)
+
+    boxed_t = [0]
+    boxed_fields = [fields]
+
+    def timestep_loop():
+        for step in range(nsteps):
+            logmgr.tick()
+
+            if step % 100 == 0:
+                e, h = op.split_eh(boxed_fields[0])
+                visf = vis.make_file("em-%d-%04d" % (order, step))
+                vis.add_data(visf,
+                        [ ("e", 
+                            #e
+                            discr.volume_from_gpu(e)
                             ), 
-                        ],
-                    time=t, step=step
-                    )
-            visf.close()
+                            ("h", 
+                                #h
+                                discr.volume_from_gpu(h)
+                                ), 
+                            ],
+                        time=boxed_t[0], step=step
+                        )
+                visf.close()
 
-        fields = stepper(fields, t, dt, op.rhs)
-        t += dt
+            boxed_fields[0] = stepper(boxed_fields[0], boxed_t[0], dt, op.rhs)
+            boxed_t[0] += dt
+
+    if False:
+        from cProfile import Profile
+        from lsprofcalltree import KCacheGrind
+        prof = Profile()
+        try:
+            prof.runcall(timestep_loop)
+            fields = boxed_fields[0]
+        finally:
+            kg = KCacheGrind(prof)
+            import sys
+            kg.output(file(sys.argv[0]+".log", 'w'))
+    else:
+        timestep_loop()
+        fields = boxed_fields[0]
 
     numpy.seterr('raise')
-    mode.set_time(t)
-    true_fields = to_obj_array(discr.interpolate_volume_function(r_sol))
+    mode.set_time(boxed_t[0])
+    true_fields = to_obj_array(mode(discr).real)
 
-    for i, (f, tf) in enumerate(zip(fields, true_fields)):
+    for i, (f, cpu_tf) in enumerate(zip(fields, true_fields)):
         cpu_f = discr.volume_from_gpu(f).astype(numpy.float64)
-        cpu_tf = discr.volume_from_gpu(tf).astype(numpy.float64)
 
         from hedge.tools import relative_error
         print "comp %i: rel error l2 (not L2) norm: %g" % (
