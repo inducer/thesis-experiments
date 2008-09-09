@@ -126,6 +126,7 @@ def main() :
     #from hedge.discr_precompiled import Discretization
     discr = pcon.make_discretization(mesh_data, order=4, 
             discr_class=Discretization, #debug=True
+            device=1
             )
     job.done()
 
@@ -205,7 +206,9 @@ def main() :
     #logmgr.add_quantity(LpNorm(u_getter, discr, p=1, name="l1_u"))
     #logmgr.add_quantity(LpNorm(u_getter, discr, name="l2_u"))
 
-    logmgr.add_watches(["step", "t_sim", "t_step", "t_diff_op+t_inner_flux"])
+    logmgr.add_watches(["step", "t_sim", "t_step", "t_diff_op+t_inner_flux",
+        "n_flops/(t_diff_op+t_inner_flux)"
+        ])
 
     # timestep loop -----------------------------------------------------------
     for step in xrange(nsteps):

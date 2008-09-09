@@ -77,7 +77,8 @@ def main():
         mode = RectangularCavityMode(epsilon, mu, (1,2,2))
 
         if pcon.is_head_rank:
-            mesh = make_box_mesh(max_volume=0.001, periodicity=periodicity)
+            #mesh = make_box_mesh(max_volume=0.001, periodicity=periodicity)
+            mesh = make_box_mesh(max_volume=0.0001, periodicity=periodicity)
 
     if pcon.is_head_rank:
         mesh_data = pcon.distribute_mesh(mesh)
@@ -88,7 +89,7 @@ def main():
     #from hedge.discr_precompiled import Discretization
     from hedge.cuda import Discretization
     discr = Discretization(mesh_data, order=order, 
-            #debug=True
+            debug=["cuda_flux", "cuda_debugbuf"]
             )
 
     #vis = VtkVisualizer(discr, pcon, "em-%d" % order)
@@ -100,7 +101,7 @@ def main():
     op = MaxwellOperator(discr, epsilon, mu, upwind_alpha=1)
 
     dt = discr.dt_factor(op.max_eigenvalue())
-    final_time = 4e-9
+    final_time = 4e-10
     nsteps = int(final_time/dt)+1
     dt = final_time/nsteps
 
@@ -117,12 +118,12 @@ def main():
     add_run_info(logmgr)
     add_general_quantities(logmgr)
     add_simulation_quantities(logmgr, dt)
-    #discr.add_instrumentation(logmgr)
-    #stepper.add_instrumentation(logmgr)
+    discr.add_instrumentation(logmgr)
+    stepper.add_instrumentation(logmgr)
 
     logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
-        #"t_diff_op+t_inner_flux",
-        #"n_flops/(t_diff_op+t_inner_flux)"
+        "t_diff_op+t_inner_flux",
+        "n_flops/(t_diff_op+t_inner_flux)"
         ])
     # timestep loop -------------------------------------------------------
 
@@ -136,7 +137,7 @@ def main():
         for step in range(nsteps):
             logmgr.tick()
 
-            if step % 100 == 0:
+            if step % 1 == 0:
                 e, h = op.split_eh(boxed_fields[0])
                 visf = vis.make_file("em-%d-%04d" % (order, step))
                 vis.add_data(visf,
