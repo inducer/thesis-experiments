@@ -89,15 +89,15 @@ def main():
     #from hedge.discr_precompiled import Discretization
     from hedge.cuda import Discretization
     discr = Discretization(mesh_data, order=order, 
-            debug=["cuda_flux", "cuda_debugbuf"]
+            #debug=["cuda_flux", "cuda_debugbuf"]
             )
 
     #vis = VtkVisualizer(discr, pcon, "em-%d" % order)
     vis = SiloVisualizer(discr, pcon)
 
     mode.set_time(0)
-    fields = discr.volume_to_gpu(to_obj_array(mode(discr)
-        .real.astype(discr.default_scalar_type)))
+    boxed_fields = [discr.volume_to_gpu(to_obj_array(mode(discr)
+        .real.astype(discr.default_scalar_type)))]
     op = MaxwellOperator(discr, epsilon, mu, upwind_alpha=1)
 
     dt = discr.dt_factor(op.max_eigenvalue())
@@ -105,11 +105,13 @@ def main():
     nsteps = int(final_time/dt)+1
     dt = final_time/nsteps
 
+    boxed_t = [0]
+
     #check_time_harmonic_solution(discr, mode, c_sol)
     #continue
 
     stepper = RK4TimeStepper()
-
+    
     # diagnostics setup ---------------------------------------------------
     from pytools.log import LogManager, add_general_quantities, \
             add_simulation_quantities, add_run_info
@@ -127,17 +129,11 @@ def main():
         ])
     # timestep loop -------------------------------------------------------
 
-    # make sure compilations are done
-    op.rhs(0, fields)
-
-    boxed_t = [0]
-    boxed_fields = [fields]
-
     def timestep_loop():
         for step in range(nsteps):
             logmgr.tick()
 
-            if step % 1 == 0:
+            if step % 100 == 0:
                 e, h = op.split_eh(boxed_fields[0])
                 visf = vis.make_file("em-%d-%04d" % (order, step))
                 vis.add_data(visf,
