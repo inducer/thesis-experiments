@@ -61,26 +61,11 @@ __global__ void apply_flux(float *debugbuf, unsigned char *gmem_data)
   /* load face_pair data */
   {
     unsigned int const *load_base = (unsigned int *) (gmem_data + blockIdx.x*DATA_BLOCK_SIZE);
-    for (unsigned word_nr = THREAD_NUM; word_nr*sizeof(unsigned int) < (sizeof(flux_data)); word_nr += COALESCING_THREAD_COUNT)
+    unsigned int *store_base = (unsigned int *) (&data);
+    for (unsigned word_nr = THREAD_NUM; word_nr*sizeof(unsigned int) < (sizeof(data)); word_nr += COALESCING_THREAD_COUNT)
       ((unsigned int *) (&data))[word_nr] = load_base[word_nr];
+  //    store_base[word_nr]=load_base[word_nr];
+      //debugbuf[THREAD_NUM]=word_nr;
   }
-  
-  __syncthreads();
-  
-  /* compute the fluxes */
-  short unsigned int fpair_nr = BLOCK_FACE;
-  /* fluxes for dual-sided (intra-block) interior face pairs */
-  
-  /* work around nvcc assertion failure */
-  
-  
-  /* fluxes for single-sided boundary face pairs */
-  
-  __syncthreads();
-  
-  /* zero out unused faces to placate the GTX280's NaN finickiness */
-  for (short unsigned int zero_face_nr = BLOCK_FACE; zero_face_nr < data.header.zero_facepairs_count; zero_face_nr += CONCURRENT_FACES)
-    ;
-  
 }
 }

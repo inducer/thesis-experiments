@@ -16,7 +16,9 @@ def test():
     gathermod = cuda.SourceModule(open("flux.cu").read())
     gather = gathermod.get_function("apply_flux")
 
-    fdata = cuda.to_device(load(open("fdata.dt")))
+    fdata = load(open("fdata.dt"))
+    print len(fdata)
+    fdata = cuda.to_device(fdata)
 
     gather.prepare("PP", block=(15, 15, 1))
 
@@ -40,7 +42,7 @@ def test():
         print "YO"
         debugbuf = gpuarray.zeros((1024,), dtype=numpy.float32)
         gather.prepared_timed_call((3435,1), 
-                fdata, debugbuf.gpudata)
+                debugbuf.gpudata, fdata)
 
         fof.bind_to_texref(fluxes_on_faces_texref)
         debugbuf = gpuarray.zeros((1024,), dtype=numpy.float32)

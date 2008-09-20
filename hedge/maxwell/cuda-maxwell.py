@@ -78,7 +78,8 @@ def main():
 
         if pcon.is_head_rank:
             #mesh = make_box_mesh(max_volume=0.001, periodicity=periodicity)
-            mesh = make_box_mesh(max_volume=0.0001, periodicity=periodicity)
+            mesh = make_box_mesh(max_volume=0.00007, periodicity=periodicity)
+            #mesh = make_box_mesh(max_volume=0.0001, periodicity=periodicity)
 
     if pcon.is_head_rank:
         mesh_data = pcon.distribute_mesh(mesh)
@@ -89,7 +90,11 @@ def main():
     #from hedge.discr_precompiled import Discretization
     from hedge.cuda import Discretization
     discr = Discretization(mesh_data, order=order, 
-            #debug=["cuda_flux", "cuda_debugbuf"]
+            debug=[
+                #"cuda_flux", 
+                #"cuda_lift", 
+                #"cuda_debugbuf"
+                ]
             )
 
     #vis = VtkVisualizer(discr, pcon, "em-%d" % order)
