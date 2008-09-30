@@ -81,6 +81,10 @@ def main():
             mesh = make_box_mesh(max_volume=0.00007, periodicity=periodicity)
             #mesh = make_box_mesh(max_volume=0.0001, periodicity=periodicity)
 
+                    #return_meshpy_mesh=True
+            #meshpy_mesh.write_neu(open("box.neu", "w"), 
+                    #bc={frozenset(range(1,7)): ("PEC", 1)})
+
     if pcon.is_head_rank:
         mesh_data = pcon.distribute_mesh(mesh)
     else:
@@ -91,9 +95,12 @@ def main():
     from hedge.cuda import Discretization
     discr = Discretization(mesh_data, order=order, 
             debug=[
+                #"cuda_diff", 
+                "cuda_diff_plan", 
                 #"cuda_flux", 
                 #"cuda_lift", 
-                #"cuda_debugbuf"
+                #"cuda_compare",
+                #"cuda_debugbuf",
                 ]
             )
 
