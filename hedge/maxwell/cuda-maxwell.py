@@ -42,7 +42,6 @@ def main():
             CylindricalCavityMode, \
             RectangularWaveguideMode, \
             RectangularCavityMode
-    from hedge.pde import MaxwellOperator
     from hedge.parallel import guess_parallelization_context
 
     pcon = guess_parallelization_context()
@@ -79,8 +78,6 @@ def main():
         if pcon.is_head_rank:
             #mesh = make_box_mesh(max_volume=0.001, periodicity=periodicity)
             mesh = make_box_mesh(max_volume=0.00007, periodicity=periodicity)
-            #mesh = make_box_mesh(max_volume=0.0001, periodicity=periodicity)
-
                     #return_meshpy_mesh=True
             #meshpy_mesh.write_neu(open("box.neu", "w"), 
                     #bc={frozenset(range(1,7)): ("PEC", 1)})
@@ -90,19 +87,18 @@ def main():
     else:
         mesh_data = pcon.receive_mesh()
 
+    from hedge.pde import MaxwellOperator
+    op = MaxwellOperator(epsilon, mu, upwind_alpha=1)
+
     order = 4
     #from hedge.discr_precompiled import Discretization
     from hedge.cuda import Discretization
-    discr = Discretization(mesh_data, order=order, 
-            debug=[
-                #"cuda_diff", 
-                "cuda_diff_plan", 
-                #"cuda_flux", 
-                #"cuda_lift", 
-                #"cuda_compare",
-                #"cuda_debugbuf",
-                ]
-            )
+    discr = Discretization(mesh_data, op.op_template(), order=order, debug=[
+        #"cuda_flux", 
+        #"cuda_debugbuf"
+        "cuda_lift_plan",
+        "cuda_diff_plan",
+        ])
 
     #vis = VtkVisualizer(discr, pcon, "em-%d" % order)
     vis = SiloVisualizer(discr, pcon)
@@ -110,7 +106,6 @@ def main():
     mode.set_time(0)
     boxed_fields = [discr.volume_to_gpu(to_obj_array(mode(discr)
         .real.astype(discr.default_scalar_type)))]
-    op = MaxwellOperator(discr, epsilon, mu, upwind_alpha=1)
 
     dt = discr.dt_factor(op.max_eigenvalue())
     final_time = 4e-10
@@ -141,6 +136,8 @@ def main():
         ])
     # timestep loop -------------------------------------------------------
 
+    rhs = op.bind(discr)
+
     def timestep_loop():
         for step in range(nsteps):
             logmgr.tick()
@@ -162,7 +159,7 @@ def main():
                         )
                 visf.close()
 
-            boxed_fields[0] = stepper(boxed_fields[0], boxed_t[0], dt, op.rhs)
+            boxed_fields[0] = stepper(boxed_fields[0], boxed_t[0], dt, rhs)
             boxed_t[0] += dt
 
     if False:
@@ -192,6 +189,4 @@ def main():
                 i, relative_error(la.norm(cpu_f-cpu_tf), la.norm(cpu_tf)))
 
 if __name__ == "__main__":
-    import cProfile as profile
-    #profile.run("main()", "wave2d.prof")
     main()
