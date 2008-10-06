@@ -130,12 +130,13 @@ def main():
 
     #from hedge.timestep import RK4TimeStepper
     from hedge.cuda.tools import RK4TimeStepper
-    stepper = RK4TimeStepper(discr.flop_counter)
+    stepper = RK4TimeStepper()
     stepper.add_instrumentation(logmgr)
 
     logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
-        "t_diff_op+t_inner_flux+t_rk4+t_vector_math",
-        "n_flops/(t_diff_op+t_inner_flux+t_rk4+t_vector_math)"
+        ("t_compute", "t_diff+t_gather+t_lift+t_rk4+t_vector_math"),
+        ("gflops/s", "(n_flops_gather+n_flops_lift+n_flops_mass+n_flops_diff+n_flops_vector_math+n_flops_rk4)"
+        "/(t_gather+t_lift+t_mass+t_diff+t_vector_math+t_rk4)")
         ])
 
     # timestep loop -------------------------------------------------------
