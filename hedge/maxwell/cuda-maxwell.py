@@ -134,8 +134,8 @@ def main():
     stepper.add_instrumentation(logmgr)
 
     logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
-        "t_diff_op+t_inner_flux+t_rk4",
-        "n_flops/(t_diff_op+t_inner_flux)"
+        "t_diff_op+t_inner_flux+t_rk4+t_vector_math",
+        "n_flops/(t_diff_op+t_inner_flux+t_rk4+t_vector_math)"
         ])
 
     # timestep loop -------------------------------------------------------
