@@ -26,7 +26,6 @@ import numpy.linalg as la
 
 def main():
     from hedge.element import TetrahedralElement
-    from hedge.timestep import RK4TimeStepper
     from hedge.mesh import make_ball_mesh, make_cylinder_mesh, make_box_mesh
     from hedge.visualization import \
             VtkVisualizer, \
@@ -98,6 +97,7 @@ def main():
         #"cuda_debugbuf"
         "cuda_lift_plan",
         "cuda_diff_plan",
+        "cuda_gather_plan",
         ])
 
     #vis = VtkVisualizer(discr, pcon, "em-%d" % order)
@@ -117,7 +117,6 @@ def main():
     #check_time_harmonic_solution(discr, mode, c_sol)
     #continue
 
-    stepper = RK4TimeStepper()
     
     # diagnostics setup ---------------------------------------------------
     from pytools.log import LogManager, add_general_quantities, \
@@ -128,12 +127,17 @@ def main():
     add_general_quantities(logmgr)
     add_simulation_quantities(logmgr, dt)
     discr.add_instrumentation(logmgr)
+
+    #from hedge.timestep import RK4TimeStepper
+    from hedge.cuda.tools import RK4TimeStepper
+    stepper = RK4TimeStepper(discr.flop_counter)
     stepper.add_instrumentation(logmgr)
 
     logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
-        "t_diff_op+t_inner_flux",
+        "t_diff_op+t_inner_flux+t_rk4",
         "n_flops/(t_diff_op+t_inner_flux)"
         ])
+
     # timestep loop -------------------------------------------------------
 
     rhs = op.bind(discr)
