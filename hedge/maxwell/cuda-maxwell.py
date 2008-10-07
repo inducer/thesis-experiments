@@ -89,8 +89,14 @@ def main():
     from hedge.pde import MaxwellOperator
     op = MaxwellOperator(epsilon, mu, upwind_alpha=1)
 
-    order = 4
     #from hedge.discr_precompiled import Discretization
+    
+    import sys
+    order = int(sys.argv[1])
+    print "----------------------------------------------------------------"
+    print "ORDER %d" % order
+    print "----------------------------------------------------------------"
+
     from hedge.cuda import Discretization
     discr = Discretization(mesh_data, op.op_template(), order=order, debug=[
         #"cuda_flux", 
@@ -123,6 +129,7 @@ def main():
             add_simulation_quantities, add_run_info
 
     logmgr = LogManager("maxwell-%d.dat" % order, "w", pcon.communicator)
+    logmgr.set_constant("ord", order)
     add_run_info(logmgr)
     add_general_quantities(logmgr)
     add_simulation_quantities(logmgr, dt)
@@ -135,7 +142,7 @@ def main():
 
     logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
         ("t_compute", "t_diff+t_gather+t_lift+t_rk4+t_vector_math"),
-        ("gflops/s", "(n_flops_gather+n_flops_lift+n_flops_mass+n_flops_diff+n_flops_vector_math+n_flops_rk4)"
+        ("flops/s", "(n_flops_gather+n_flops_lift+n_flops_mass+n_flops_diff+n_flops_vector_math+n_flops_rk4)"
         "/(t_gather+t_lift+t_mass+t_diff+t_vector_math+t_rk4)")
         ])
 
