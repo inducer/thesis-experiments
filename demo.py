@@ -7,28 +7,30 @@ import pycuda.gpuarray as gpuarray
 
 
 def time_brute(particle_count):
-    node_count = 30000
-    dim = 3
-    dim_align = 4 
+    node_count = 860060
+    xdim = 3
+    vdim = 3
+    xdim_align = 4 
+    vdim_align = 4 
 
     dtype = numpy.float32
-    x_node = numpy.random.randn(node_count, dim_align).astype(dtype)
-    x_particle = numpy.random.randn(particle_count, dim_align).astype(dtype)
-    v_particle = numpy.random.randn(particle_count, dim_align).astype(dtype)
+    x_node = numpy.random.randn(node_count, xdim_align).astype(dtype)
+    x_particle = numpy.random.randn(particle_count, xdim_align).astype(dtype)
+    v_particle = numpy.random.randn(particle_count, xdim_align).astype(dtype)
 
     x_node_gpu = gpuarray.to_gpu(x_node)
     x_particle_gpu = gpuarray.to_gpu(x_particle)
     v_particle_gpu = gpuarray.to_gpu(v_particle)
 
-    threads_per_block = 128
+    threads_per_block = 256
 
     smod = cuda.SourceModule("""
     #define THREADS_PER_BLOCK %(threads_per_block)d
 
-    typedef float%(dim_align)d pos_align_vec;
-    typedef float%(dim_align)d velocity_align_vec;
-    typedef float%(dim)d pos_vec;
-    typedef float%(dim)d velocity_vec;
+    typedef float%(xdim_align)d pos_align_vec;
+    typedef float%(vdim_align)d velocity_align_vec;
+    typedef float%(xdim)d pos_vec;
+    typedef float%(vdim)d velocity_vec;
 
     texture<pos_align_vec, 1, cudaReadModeElementType> tex_x_particle;
     texture<velocity_align_vec, 1, cudaReadModeElementType> tex_v_particle;
@@ -49,79 +51,86 @@ def time_brute(particle_count):
     // main kernel ------------------------------------------------------------
 
     __shared__ pos_vec smem_x_particle[THREADS_PER_BLOCK];
-    __shared__ pos_vec smem_v_particle[THREADS_PER_BLOCK];
 
-    extern "C" __global__ void brute(float4 *j, 
+    extern "C" __global__ void brute(
+      float *debugbuf,
+      velocity_vec *j, 
       float particle, float radius, float radius_squared, float normalizer,
       unsigned node_count, unsigned particle_count)
     {
-      unsigned node_id = threadIdx.x + blockDim.x * blockIdx.x;
-      if (node_id >= node_count)
-        return;
+      unsigned node_id = threadIdx.x + THREADS_PER_BLOCK * blockIdx.x;
 
-      float4 x_node = tex1Dfetch(tex_x_node, node_id);
+      pos_vec x_node = shorten<pos_vec>::call(tex1Dfetch(tex_x_node, node_id));
 
-      float4 my_j;
+      velocity_vec my_j;
 
-      /*
       for (unsigned n_particle_base = 0; n_particle_base < particle_count; n_particle_base += THREADS_PER_BLOCK)
       {
-        const unsigned n_particle = n_particle_base + threadIdx.x;
-
         __syncthreads();
-        smem_x_particle[threadIdx.x] = smem_
+        smem_x_particle[threadIdx.x] = shorten<pos_vec>::call(tex1Dfetch(tex_x_particle, n_particle_base+threadIdx.x));
         __syncthreads();
-      }
-      */
-      for (unsigned n_particle = 0; n_particle < particle_count; ++n_particle)
-      {
-        float3 x_particle = shorten<pos_vec>::call(tex1Dfetch(tex_x_particle, n_particle));
-        float3 x_rel = make_float3(
-            x_particle.x-x_node.x, 
-            x_particle.y-x_node.y, 
-            x_particle.z-x_node.z);
-        float r_squared = 
-            x_rel.x*x_rel.x
-          + x_rel.y*x_rel.y
-          + x_rel.z*x_rel.z;
 
-        if (r_squared < radius_squared)
+        unsigned block_particle_count = THREADS_PER_BLOCK;
+        if (n_particle_base + block_particle_count >= particle_count)
+          block_particle_count = particle_count - n_particle_base;
+
+        for (unsigned n_particle_local = 0; 
+            n_particle_local < block_particle_count; 
+            ++n_particle_local)
         {
-          float z = radius-r_squared/radius;
-          float blob = particle * normalizer * z*z;
+          pos_vec x_particle = smem_x_particle[n_particle_local];
+          pos_vec x_rel = make_float3(
+              x_particle.x-x_node.x, 
+              x_particle.y-x_node.y, 
+              x_particle.z-x_node.z);
+          float r_squared = 
+              x_rel.x*x_rel.x
+            + x_rel.y*x_rel.y
+            + x_rel.z*x_rel.z;
 
-          float4 v_particle = tex1Dfetch(tex_v_particle, n_particle);
+          if (r_squared < radius_squared)
+          {
+            float z = radius-r_squared/radius;
+            float blob = particle * normalizer * z*z;
 
-          my_j.x += blob*v_particle.x;
-          my_j.y += blob*v_particle.y;
-          my_j.z += blob*v_particle.z;
+            velocity_vec v_particle = shorten<pos_vec>::call(tex1Dfetch(tex_v_particle, n_particle_base+n_particle_local));
+
+            my_j.x += blob*v_particle.x;
+            my_j.y += blob*v_particle.y;
+            my_j.z += blob*v_particle.z;
+          }
         }
       }
 
-      j[node_id] = my_j;
+      if (node_id < node_count)
+        j[node_id] = my_j;
     }
     \n""" % locals(), no_extern_c=True, keep=True)
 
     tex_x_node = smod.get_texref("tex_x_node")
-    tex_x_node.set_format(cuda.array_format.FLOAT, dim_align)
+    tex_x_node.set_format(cuda.array_format.FLOAT, xdim_align)
     tex_x_particle = smod.get_texref("tex_x_particle")
-    tex_x_particle.set_format(cuda.array_format.FLOAT, dim_align)
+    tex_x_particle.set_format(cuda.array_format.FLOAT, xdim_align)
     tex_v_particle = smod.get_texref("tex_v_particle")
-    tex_v_particle.set_format(cuda.array_format.FLOAT, dim_align)
+    tex_v_particle.set_format(cuda.array_format.FLOAT, vdim_align)
 
     x_node_gpu.bind_to_texref(tex_x_node)
     x_particle_gpu.bind_to_texref(tex_x_particle)
     v_particle_gpu.bind_to_texref(tex_v_particle)
 
+    debugbuf = gpuarray.zeros((threads_per_block,), dtype=numpy.float32)
+
     func = smod.get_function("brute").prepare(
-            "PffffII",
+            "PPffffII",
             block=(threads_per_block,1,1),
             texrefs=[tex_x_particle, tex_v_particle])
+    print "stats: smem=%d regs=%d lmem=%d" % (
+        func.smem, func.registers, func.lmem)
 
     start = cuda.Event()
     stop = cuda.Event()
 
-    j = gpuarray.zeros(v_particle.shape, v_particle.dtype)
+    j = gpuarray.zeros((node_count, vdim_align), dtype=dtype)
 
     from hedge.cuda.tools import int_ceiling
 
@@ -129,19 +138,21 @@ def time_brute(particle_count):
     radius = 0.1
 
     from pyrticle.tools import PolynomialShapeFunction
-    sf = PolynomialShapeFunction(radius, dim)
+    sf = PolynomialShapeFunction(radius, xdim)
 
     start.record()
     func.prepared_call(
             (int_ceiling(node_count/threads_per_block), 1),
+            debugbuf.gpudata,
             j.gpudata,
             charge, radius, radius**2, sf.normalizer,
             node_count, particle_count)
     stop.record()
     stop.synchronize()
 
-    t = stop.time_since(start)*1e-3
+    #print debugbuf
 
+    t = stop.time_since(start)*1e-3
     return particle_count/t
 
 def main():
