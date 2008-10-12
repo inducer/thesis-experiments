@@ -44,17 +44,17 @@ def main():
     pcounts = [100*1000]
 
     from brute import time_brute
-    #from sift import time_sift
+    from sift import time_sift
     for test_nr, particle_count in enumerate(pcounts):
         pib = make_pib(particle_count)
 
         vis_data = []
 
         for alg, func in [
-            ("brute", time_brute),
-            #("sift", time_sift),
+            #("brute", time_brute),
+            ("sift", time_sift),
             ]:
-            rate, j = time_brute(pib)
+            rate, j = func(pib)
             print alg, particle_count, rate
             vis_data.append(("%s_%d" % (alg, particle_count), j))
 
