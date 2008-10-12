@@ -3,3 +3,5 @@
 *.conf
 *.pyc
 *.log
+*.silo
+*.vtk

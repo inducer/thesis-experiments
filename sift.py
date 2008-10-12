@@ -180,13 +180,13 @@ def time_sift(pib):
         {
           if (n_particle < particle_count)
           {
-            #pragma unroll
-            for (unsigned repeats = 0; repeats < 4; ++repeats)
+            //#pragma unroll
+            //for (unsigned repeats = 0; repeats < 4; ++repeats)
             {
               float3 x_particle = shorten<pos_vec>::call(
                 tex1Dfetch(tex_x_particle, n_particle)); 
 
-              int out_of_bounds_indicator =
+              int out_of_bbox_indicator =
                   signbit(x_particle.x - bbox_min[0])
                 + signbit(bbox_max[0] - x_particle.x)
                 + signbit(x_particle.y - bbox_min[1])
@@ -194,21 +194,27 @@ def time_sift(pib):
                 + signbit(x_particle.z - bbox_min[2])
                 + signbit(bbox_max[2] - x_particle.z)
                 ;
-              if (out_of_bounds_indicator)
+              if (out_of_bbox_indicator)
               {
                 unsigned idx_in_list = atomicAdd(&todo_particle_count, 1)-1;
                 if (idx_in_list < PARTICLE_LIST_SIZE)
                 {
                   todo_particles[idx_in_list] = n_particle;
-                  particle_count += THREADS_PER_BLOCK;
+                  n_particle += THREADS_PER_BLOCK;
                 }
               }
               else
-                particle_count += THREADS_PER_BLOCK;
+                n_particle += THREADS_PER_BLOCK;
             }
           }
           else
-            atomicAdd(&out_of_particles_thread_count, 1);
+          {
+            // every thread should only contribute to out_of_particles_thread_count once.
+
+            if (n_particle != unsigned(-1))
+              atomicAdd(&out_of_particles_thread_count, 1);
+            n_particle = unsigned(-1);
+          }
 
           // loop end conditions
 
@@ -216,7 +222,7 @@ def time_sift(pib):
           if (out_of_particles_thread_count == THREADS_PER_BLOCK)
             break;
 
-          if (todo_particle_count >= THREADS_PER_BLOCK)
+          if (todo_particle_count >= PARTICLE_LIST_SIZE)
             break;
 
           __syncthreads();
