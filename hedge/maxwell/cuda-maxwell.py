@@ -75,8 +75,9 @@ def main():
         mode = RectangularCavityMode(epsilon, mu, (1,2,2))
 
         if pcon.is_head_rank:
-            #mesh = make_box_mesh(max_volume=0.001, periodicity=periodicity)
+            #mesh = make_box_mesh(max_volume=0.0002, periodicity=periodicity)
             mesh = make_box_mesh(max_volume=0.00007, periodicity=periodicity)
+            #mesh = make_box_mesh(max_volume=0.0007, periodicity=periodicity)
                     #return_meshpy_mesh=True
             #meshpy_mesh.write_neu(open("box.neu", "w"), 
                     #bc={frozenset(range(1,7)): ("PEC", 1)})
@@ -87,7 +88,7 @@ def main():
         mesh_data = pcon.receive_mesh()
 
     from hedge.pde import MaxwellOperator
-    op = MaxwellOperator(epsilon, mu, upwind_alpha=1)
+    op = MaxwellOperator(epsilon, mu, flux_type=1)
 
     #from hedge.discr_precompiled import Discretization
     
@@ -104,6 +105,7 @@ def main():
         "cuda_lift_plan",
         "cuda_diff_plan",
         "cuda_gather_plan",
+        "cuda_dumpkernels",
         ])
 
     #vis = VtkVisualizer(discr, pcon, "em-%d" % order)
@@ -114,7 +116,11 @@ def main():
         .real.astype(discr.default_scalar_type)))]
 
     dt = discr.dt_factor(op.max_eigenvalue())
-    final_time = 4e-10
+    if order >= 7:
+        final_time = 1e-10
+    else:
+        final_time = 4e-10
+
     nsteps = int(final_time/dt)+1
     dt = final_time/nsteps
 
