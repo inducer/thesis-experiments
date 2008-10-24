@@ -32,3 +32,6 @@ doc/dev-reference
 *.csv
 out
 el_faces.txt
+diff.cu
+flux_gather.cu
+flux_lift.cu
