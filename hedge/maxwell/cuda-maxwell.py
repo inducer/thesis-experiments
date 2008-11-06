@@ -55,6 +55,21 @@ def main():
     cylindrical = False
     periodic = False
 
+    from optparse import OptionParser
+    parser = OptionParser()
+    parser.add_option("--order", default=4, type="int")
+    parser.add_option("--h", default=0.08, type="float")
+    parser.add_option("--final-time", default=4e-10, type="float")
+    parser.add_option("--vis-interval", default=0, type="int")
+    parser.add_option("-d", "--debug-flags", metavar="DEBUG_FLAG,DEBUG_FLAG")
+    parser.add_option("--log-file", default="maxwell-%(order)s.dat")
+    options, args = parser.parse_args()
+    assert not args
+
+    print "----------------------------------------------------------------"
+    print "ORDER %d" % options.order
+    print "----------------------------------------------------------------"
+
     if cylindrical:
         R = 1
         d = 2
@@ -75,8 +90,7 @@ def main():
         mode = RectangularCavityMode(epsilon, mu, (1,2,2))
 
         if pcon.is_head_rank:
-            #mesh = make_box_mesh(max_volume=0.0002, periodicity=periodicity)
-            mesh = make_box_mesh(max_volume=0.00007, periodicity=periodicity)
+            mesh = make_box_mesh(max_volume=options.h**3/6, periodicity=periodicity)
             #mesh = make_box_mesh(max_volume=0.0007, periodicity=periodicity)
                     #return_meshpy_mesh=True
             #meshpy_mesh.write_neu(open("box.neu", "w"), 
@@ -90,39 +104,48 @@ def main():
     from hedge.pde import MaxwellOperator
     op = MaxwellOperator(epsilon, mu, flux_type=1)
 
-    #from hedge.discr_precompiled import Discretization
-    
-    import sys
-    order = int(sys.argv[1])
-    print "----------------------------------------------------------------"
-    print "ORDER %d" % order
-    print "----------------------------------------------------------------"
-
-    from hedge.cuda import Discretization
-    discr = Discretization(mesh_data, op.op_template(), order=order, debug=[
+    debug_flags = [
         #"cuda_flux", 
         #"cuda_debugbuf"
-        "cuda_lift_plan",
-        "cuda_diff_plan",
-        "cuda_gather_plan",
-        "cuda_dumpkernels",
-        ])
+        #"cuda_lift_plan",
+        #"cuda_diff_plan",
+        #"cuda_gather_plan",
+        #"cuda_dumpkernels",
+        ]
+    if options.debug_flags:
+        for f in options.debug_flags.split(","):
+            debug_flags.append(f)
 
-    #vis = VtkVisualizer(discr, pcon, "em-%d" % order)
-    vis = SiloVisualizer(discr, pcon)
+    from hedge.discr_precompiled import Discretization as CPUDiscretization
+    from hedge.cuda import Discretization 
+    discr = Discretization(mesh_data, op.op_template(), order=options.order, debug=debug_flags)
+    #discr = CPUDiscretization(mesh_data, order=options.order, debug=debug_flags)
+    cpu_discr = CPUDiscretization(mesh_data, order=options.order)
+
+    if isinstance(discr, CPUDiscretization):
+        def to_gpu(x):
+            return x
+        def from_gpu(x):
+            return x
+    else:
+        def to_gpu(x):
+            return discr.volume_to_gpu(x)
+        def from_gpu(x):
+            return discr.volume_from_gpu(x)
+
+
+        
+    if options.vis_interval:
+        #vis = VtkVisualizer(discr, pcon, "em-%d" % options.order)
+        vis = SiloVisualizer(discr, pcon)
 
     mode.set_time(0)
-    boxed_fields = [discr.volume_to_gpu(to_obj_array(mode(discr)
+    boxed_fields = [to_gpu(to_obj_array(mode(discr)
         .real.astype(discr.default_scalar_type)))]
 
     dt = discr.dt_factor(op.max_eigenvalue())
-    if order >= 7:
-        final_time = 1e-10
-    else:
-        final_time = 4e-10
-
-    nsteps = int(final_time/dt)+1
-    dt = final_time/nsteps
+    nsteps = int(options.final_time/dt)+1
+    dt = options.final_time/nsteps
 
     boxed_t = [0]
 
@@ -134,23 +157,31 @@ def main():
     from pytools.log import LogManager, add_general_quantities, \
             add_simulation_quantities, add_run_info
 
-    logmgr = LogManager("maxwell-%d.dat" % order, "w", pcon.communicator)
-    logmgr.set_constant("ord", order)
+    logmgr = LogManager(options.log_file % {"order": options.order}, 
+            "w", pcon.communicator)
     add_run_info(logmgr)
     add_general_quantities(logmgr)
     add_simulation_quantities(logmgr, dt)
     discr.add_instrumentation(logmgr)
 
-    #from hedge.timestep import RK4TimeStepper
-    from hedge.cuda.tools import RK4TimeStepper
+    if isinstance(discr, CPUDiscretization):
+        from hedge.timestep import RK4TimeStepper
+    else:
+        from hedge.cuda.tools import RK4TimeStepper
+
     stepper = RK4TimeStepper()
     stepper.add_instrumentation(logmgr)
 
-    logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
-        ("t_compute", "t_diff+t_gather+t_lift+t_rk4+t_vector_math"),
-        ("flops/s", "(n_flops_gather+n_flops_lift+n_flops_mass+n_flops_diff+n_flops_vector_math+n_flops_rk4)"
-        "/(t_gather+t_lift+t_mass+t_diff+t_vector_math+t_rk4)")
-        ])
+    if isinstance(discr, CPUDiscretization):
+        logmgr.add_watches(["step.max", "t_sim.max", "t_step.max"])
+    else:
+        logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
+            ("t_compute", "t_diff+t_gather+t_lift+t_rk4+t_vector_math"),
+            ("flops/s", "(n_flops_gather+n_flops_lift+n_flops_mass+n_flops_diff+n_flops_vector_math+n_flops_rk4)"
+            "/(t_gather+t_lift+t_mass+t_diff+t_vector_math+t_rk4)")
+            ])
+
+    logmgr.set_constant("h", options.h)
 
     # timestep loop -------------------------------------------------------
 
@@ -160,17 +191,17 @@ def main():
         for step in range(nsteps):
             logmgr.tick()
 
-            if step % 100 == 0:
+            if options.vis_interval and step % options.vis_interval == 0:
                 e, h = op.split_eh(boxed_fields[0])
-                visf = vis.make_file("em-%d-%04d" % (order, step))
+                visf = vis.make_file("em-%d-%04d" % (options.order, step))
                 vis.add_data(visf,
                         [ ("e", 
                             #e
-                            discr.volume_from_gpu(e)
+                            from_gpu(e)
                             ), 
                             ("h", 
                                 #h
-                                discr.volume_from_gpu(h)
+                                from_gpu(h)
                                 ), 
                             ],
                         time=boxed_t[0], step=step
@@ -197,14 +228,25 @@ def main():
 
     numpy.seterr('raise')
     mode.set_time(boxed_t[0])
-    true_fields = to_obj_array(mode(discr).real)
 
+    from hedge.tools import relative_error
+    true_fields = to_obj_array(mode(cpu_discr).real.copy())
+
+    total_diff = 0
+    total_true = 0
     for i, (f, cpu_tf) in enumerate(zip(fields, true_fields)):
-        cpu_f = discr.volume_from_gpu(f).astype(numpy.float64)
+        cpu_f = from_gpu(f).astype(numpy.float64)
 
-        from hedge.tools import relative_error
-        print "comp %i: rel error l2 (not L2) norm: %g" % (
-                i, relative_error(la.norm(cpu_f-cpu_tf), la.norm(cpu_tf)))
+        l2_diff = cpu_discr.norm(cpu_f-cpu_tf) 
+        l2_true = cpu_discr.norm(cpu_tf)
+
+        total_diff += l2_diff**2
+        total_true += l2_true**2
+
+    relerr = relative_error(total_diff**0.5, total_true**0.5)
+    print "rel L2 error: %g" % relerr
+    logmgr.set_constant("relerr", relerr)
+    logmgr.close()
 
 if __name__ == "__main__":
     main()
