@@ -1,6 +1,6 @@
 *~
 .*.sw[po]
-.swp
+.sw[po]
 *.dat
 *.dat-journal
 *.py[co]
