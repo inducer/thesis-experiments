@@ -54,7 +54,7 @@ def main() :
 
     pcon = guess_parallelization_context()
 
-    dim = 3
+    dim = 2
 
     if pcon.is_head_rank:
         job = Job("mesh")
@@ -210,14 +210,14 @@ def main() :
     from hedge.discretization import Filter, ExponentialFilterResponseFunction
     filter = Filter(discr, ExponentialFilterResponseFunction(0.97, 3))
 
-    print op.op_template().pp_optemplate
+    counter = [0]
+
     for step in xrange(nsteps):
         logmgr.tick()
 
         t = step*dt
 
-        if step % 1 == 0:
-
+        if False: #step % 1000 == 0:
             vis_timer.start()
             visf = vis.make_file("fld-%04d" % step)
             vis.add_data(visf, [
@@ -232,8 +232,23 @@ def main() :
             vis_timer.stop()
 
 
+        def rhs(t, u):
+            vis_timer.start()
+            visf = vis.make_file("fld-%04d" % counter[0])
+            counter[0] += 1
+            vis.add_data(visf, [
+                        ("u", u), 
+                        ("logu", logmap(u)), 
+                        ], 
+                        #expressions=[("error", "u-u_true")],
+                        time=t, 
+                        step=step
+                        )
+            visf.close()
+            vis_timer.stop()
+            return op.rhs(t, u)
         #u = filter(stepper(u, t, dt, op.rhs))
-        u = stepper(u, t, dt, op.rhs)
+        u = stepper(u, t, dt, rhs)
         #if step % 1 == 0:
             #u = filter(u)
 
