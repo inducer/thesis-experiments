@@ -6,5 +6,5 @@ for o in `seq 1 9`; do
   else
     h=0.075
   fi
-  python cuda-maxwell.py --order=$o --h=$h
+  python cuda-maxwell.py --order=$o --h=$h "$@"
 done

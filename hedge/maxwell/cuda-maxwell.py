@@ -37,13 +37,8 @@ def main():
             check_time_harmonic_solution, \
             RealPartAdapter, \
             SplitComplexAdapter, \
-            CartesianAdapter, \
-            CylindricalCavityMode, \
             RectangularWaveguideMode, \
             RectangularCavityMode
-    from hedge.parallel import guess_parallelization_context
-
-    pcon = guess_parallelization_context()
 
     epsilon0 = 8.8541878176e-12 # C**2 / (N m**2)
     mu0 = 4*pi*1e-7 # N/A**2.
@@ -61,6 +56,8 @@ def main():
     parser.add_option("--h", default=0.08, type="float")
     parser.add_option("--final-time", default=4e-10, type="float")
     parser.add_option("--vis-interval", default=0, type="int")
+    parser.add_option("--steps", type="int")
+    parser.add_option("--cpu", action="store_true")
     parser.add_option("-d", "--debug-flags", metavar="DEBUG_FLAG,DEBUG_FLAG")
     parser.add_option("--log-file", default="maxwell-%(order)s.dat")
     options, args = parser.parse_args()
@@ -79,8 +76,7 @@ def main():
         r_sol = CartesianAdapter(RealPartAdapter(mode))
         c_sol = SplitComplexAdapter(CartesianAdapter(mode))
 
-        if pcon.is_head_rank:
-            mesh = make_cylinder_mesh(radius=R, height=d, max_volume=0.01)
+        mesh = make_cylinder_mesh(radius=R, height=d, max_volume=0.01)
     else:
         if periodic:
             mode = RectangularWaveguideMode(epsilon, mu, (3,2,1))
@@ -89,17 +85,11 @@ def main():
             periodicity = None
         mode = RectangularCavityMode(epsilon, mu, (1,2,2))
 
-        if pcon.is_head_rank:
-            mesh = make_box_mesh(max_volume=options.h**3/6, periodicity=periodicity)
-            #mesh = make_box_mesh(max_volume=0.0007, periodicity=periodicity)
-                    #return_meshpy_mesh=True
-            #meshpy_mesh.write_neu(open("box.neu", "w"), 
-                    #bc={frozenset(range(1,7)): ("PEC", 1)})
-
-    if pcon.is_head_rank:
-        mesh_data = pcon.distribute_mesh(mesh)
-    else:
-        mesh_data = pcon.receive_mesh()
+        mesh = make_box_mesh(max_volume=options.h**3/6, periodicity=periodicity)
+        #mesh = make_box_mesh(max_volume=0.0007, periodicity=periodicity)
+                #return_meshpy_mesh=True
+        #meshpy_mesh.write_neu(open("box.neu", "w"), 
+                #bc={frozenset(range(1,7)): ("PEC", 1)})
 
     from hedge.pde import MaxwellOperator
     op = MaxwellOperator(epsilon, mu, flux_type=1)
@@ -116,49 +106,52 @@ def main():
         for f in options.debug_flags.split(","):
             debug_flags.append(f)
 
-    from hedge.discr_precompiled import Discretization as CPUDiscretization
-    from hedge.cuda import Discretization 
-    discr = Discretization(mesh_data, op.op_template(), order=options.order, debug=debug_flags)
-    #discr = CPUDiscretization(mesh_data, order=options.order, debug=debug_flags)
-    cpu_discr = CPUDiscretization(mesh_data, order=options.order)
+    from hedge.backends.dynamic import Discretization as CPUDiscretization
+    from hedge.backends.cuda import Discretization as GPUDiscretization
+    if options.cpu:
+        discr = CPUDiscretization(mesh, order=options.order, debug=debug_flags)
 
-    if isinstance(discr, CPUDiscretization):
         def to_gpu(x):
             return x
         def from_gpu(x):
             return x
+        cpu_discr = discr
     else:
+        discr = GPUDiscretization(mesh, order=options.order, debug=debug_flags,
+                tune_for=op.op_template())
+
         def to_gpu(x):
             return discr.volume_to_gpu(x)
         def from_gpu(x):
             return discr.volume_from_gpu(x)
 
+        cpu_discr = CPUDiscretization(mesh, order=options.order)
 
-        
     if options.vis_interval:
         #vis = VtkVisualizer(discr, pcon, "em-%d" % options.order)
-        vis = SiloVisualizer(discr, pcon)
+        vis = SiloVisualizer(discr)
 
     mode.set_time(0)
     boxed_fields = [to_gpu(to_obj_array(mode(discr)
         .real.astype(discr.default_scalar_type)))]
 
     dt = discr.dt_factor(op.max_eigenvalue())
-    nsteps = int(options.final_time/dt)+1
-    dt = options.final_time/nsteps
+    if options.steps is None:
+        nsteps = int(options.final_time/dt)+1
+        dt = options.final_time/nsteps
+    else:
+        nsteps = options.steps
 
     boxed_t = [0]
 
     #check_time_harmonic_solution(discr, mode, c_sol)
     #continue
-
     
     # diagnostics setup ---------------------------------------------------
     from pytools.log import LogManager, add_general_quantities, \
             add_simulation_quantities, add_run_info
 
-    logmgr = LogManager(options.log_file % {"order": options.order}, 
-            "w", pcon.communicator)
+    logmgr = LogManager(options.log_file % {"order": options.order}, "w")
     add_run_info(logmgr)
     add_general_quantities(logmgr)
     add_simulation_quantities(logmgr, dt)
@@ -167,13 +160,16 @@ def main():
     if isinstance(discr, CPUDiscretization):
         from hedge.timestep import RK4TimeStepper
     else:
-        from hedge.cuda.tools import RK4TimeStepper
+        from hedge.backends.cuda.tools import RK4TimeStepper
 
     stepper = RK4TimeStepper()
     stepper.add_instrumentation(logmgr)
 
     if isinstance(discr, CPUDiscretization):
-        logmgr.add_watches(["step.max", "t_sim.max", "t_step.max"])
+        logmgr.add_watches(["step.max", "t_sim.max", "t_step.max",
+            ("flops/s", "(n_flops_gather+n_flops_lift+n_flops_mass+n_flops_diff)"
+            "/(t_gather+t_lift+t_mass+t_diff)")
+            ])
     else:
         logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
             ("t_compute", "t_diff+t_gather+t_lift+t_rk4+t_vector_math"),
@@ -182,6 +178,7 @@ def main():
             ])
 
     logmgr.set_constant("h", options.h)
+    logmgr.set_constant("is_cpu", options.cpu)
 
     # timestep loop -------------------------------------------------------
 
