@@ -39,6 +39,9 @@ def main():
             SplitComplexAdapter, \
             RectangularWaveguideMode, \
             RectangularCavityMode
+    from hedge.backends import guess_run_context
+
+    rcon = guess_run_context()
 
     epsilon0 = 8.8541878176e-12 # C**2 / (N m**2)
     mu0 = 4*pi*1e-7 # N/A**2.
@@ -76,7 +79,8 @@ def main():
         r_sol = CartesianAdapter(RealPartAdapter(mode))
         c_sol = SplitComplexAdapter(CartesianAdapter(mode))
 
-        mesh = make_cylinder_mesh(radius=R, height=d, max_volume=0.01)
+        if rcon.is_head_rank:
+            mesh = make_cylinder_mesh(radius=R, height=d, max_volume=0.01)
     else:
         if periodic:
             mode = RectangularWaveguideMode(epsilon, mu, (3,2,1))
@@ -85,11 +89,17 @@ def main():
             periodicity = None
         mode = RectangularCavityMode(epsilon, mu, (1,2,2))
 
-        mesh = make_box_mesh(max_volume=options.h**3/6, periodicity=periodicity)
-        #mesh = make_box_mesh(max_volume=0.0007, periodicity=periodicity)
-                #return_meshpy_mesh=True
-        #meshpy_mesh.write_neu(open("box.neu", "w"), 
-                #bc={frozenset(range(1,7)): ("PEC", 1)})
+        if rcon.is_head_rank:
+            mesh = make_box_mesh(max_volume=options.h**3/6, periodicity=periodicity)
+            #mesh = make_box_mesh(max_volume=0.0007, periodicity=periodicity)
+                    #return_meshpy_mesh=True
+            #meshpy_mesh.write_neu(open("box.neu", "w"), 
+                    #bc={frozenset(range(1,7)): ("PEC", 1)})
+
+    if rcon.is_head_rank:
+        mesh_data = rcon.distribute_mesh(mesh)
+    else:
+        mesh_data = rcon.receive_mesh()
 
     from hedge.pde import MaxwellOperator
     op = MaxwellOperator(epsilon, mu, flux_type=1)
@@ -127,9 +137,10 @@ def main():
 
         cpu_discr = CPUDiscretization(mesh, order=options.order)
 
+
     if options.vis_interval:
-        #vis = VtkVisualizer(discr, pcon, "em-%d" % options.order)
-        vis = SiloVisualizer(discr)
+        #vis = VtkVisualizer(discr, rcon, "em-%d" % options.order)
+        vis = SiloVisualizer(discr, rcon)
 
     mode.set_time(0)
     boxed_fields = [to_gpu(to_obj_array(mode(discr)
@@ -151,7 +162,8 @@ def main():
     from pytools.log import LogManager, add_general_quantities, \
             add_simulation_quantities, add_run_info
 
-    logmgr = LogManager(options.log_file % {"order": options.order}, "w")
+    logmgr = LogManager(options.log_file % {"order": options.order}, 
+            "w", rcon.communicator)
     add_run_info(logmgr)
     add_general_quantities(logmgr)
     add_simulation_quantities(logmgr, dt)
