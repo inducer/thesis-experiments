@@ -33,12 +33,16 @@ def main():
             get_rank_partition
     from hedge.tools import EOCRecorder, to_obj_array
     from math import sqrt, pi
+
+    import sys
+    sys.path.append("../../../hedge/examples/maxwell")
     from analytic_solutions import \
             check_time_harmonic_solution, \
             RealPartAdapter, \
             SplitComplexAdapter, \
             RectangularWaveguideMode, \
             RectangularCavityMode
+
     from hedge.backends import guess_run_context
 
     rcon = guess_run_context()

@@ -20,6 +20,66 @@
 from __future__ import division
 import numpy
 import numpy.linalg as la
+from pytools import memoize_method
+
+
+
+
+class WindowedPlaneWave:
+    """See Jackson, 3rd ed. Section 7.1."""
+
+    def __init__(self, amplitude, origin, epsilon, mu, v, omega, sigma, 
+            dimensions=3):
+        self.ctx = dict(
+                amplitude=amplitude, origin=origin,
+                espilon=epsilon, mu=mu, v=v,
+                omega=omega, sigma=sigma)
+
+        self.dimensions = dimensions
+
+        self.nodes_cache = {}
+
+    @memoize_method
+    def exprs(self):
+        from pymbolic import var
+        from pymbolic.primitives import CommonSubexpression
+
+        def make_vec(basename):
+            from hedge.tools import make_obj_array
+            return make_obj_array(
+                    [var("%s%d" % (basename, i)) for i in range(self.dimensions)])
+
+        amplitude, origin, x, v = [make_vec(n) for n in "amplitude origin x v".split()]
+        epsilon, mu, omega, sigma = [var(f) for f in "epsilon mu omega sigma".split()]
+        sin, cos, sqrt, exp = [var(f) for f in "sin cos sqrt exp".split()]
+
+        c_inv = CommonSubexpression(sqrt(mu*epsilon))
+        norm_v_squared = CommonSubexpression(numpy.dot(v, v))
+        n = v/sqrt(norm_v_squared)
+        k = v*CommonSubexpression(omega/norm_v_squared) 
+
+        t = var("t")
+
+        modulation = CommonSubexpression(
+            sin(numpy.dot(k, x) - omega*t)
+            * exp(-numpy.dot(v, x)**2/(2*sigma**2))
+            )
+
+        e = amplitude * modulation
+        from hedge.tools import join_fields
+        return join_fields(
+                e,
+                c_inv*numpy.cross(n, e),)
+
+    def boundary_interpolant(self, t, discr, tag):
+        try:
+            nodes = self.nodes_cache[discr, tag]
+        except KeyError:
+            nodes = discr.boundary_to_gpu(
+                    tag, discr.get_boundary(tag).nodes)
+            self.nodes_cache[discr, tag] = nodes
+
+        raise RuntimeError("none")
 
 
 
@@ -95,8 +155,23 @@ def main():
     else:
         mesh_data = rcon.receive_mesh()
 
+    ibc = WindowedPlaneWave(
+        amplitude=numpy.array([1,0,0]),
+        origin=numpy.array([0,0,0]),
+        epsilon=epsilon,
+        mu=mu,
+        v=0.5/sqrt(mu*epsilon)*numpy.array([0,0,1]),
+        omega=1e7,
+        sigma=0.2)
+
+    ibc.exprs()
+
     from hedge.pde import GedneyPMLMaxwellOperator
-    op = GedneyPMLMaxwellOperator(epsilon, mu, flux_type=1)
+    op = GedneyPMLMaxwellOperator(epsilon, mu, 
+            incident_tag="shell",
+            pec_tag="outside",
+            incident_bc=ibc,
+            flux_type=1)
 
     debug_flags = []
     if options.debug_flags:
@@ -175,7 +250,7 @@ def main():
 
     rhs = op.bind(discr, sigma=to_gpu(op.sigma_from_width(discr, pml_width)))
 
-    fields = op.assemble_fields(discr=discr)
+    fields = op.assemble_ehdb(discr=discr)
 
     for step in range(nsteps):
         logmgr.tick()
