@@ -30,56 +30,101 @@ class WindowedPlaneWave:
 
     def __init__(self, amplitude, origin, epsilon, mu, v, omega, sigma, 
             dimensions=3):
-        self.ctx = dict(
-                amplitude=amplitude, origin=origin,
-                espilon=epsilon, mu=mu, v=v,
-                omega=omega, sigma=sigma)
+
+        self.amplitude = amplitude
+        self.origin = origin
+        self.epsilon = epsilon
+        self.mu = mu
+        self.v = v
+        self.omega = omega
+        self.sigma = sigma
+        self.sigma = sigma
 
         self.dimensions = dimensions
 
         self.nodes_cache = {}
 
     @memoize_method
-    def exprs(self):
+    def make_func(self, discr):
         from pymbolic import var
-        from pymbolic.primitives import CommonSubexpression
 
         def make_vec(basename):
             from hedge.tools import make_obj_array
             return make_obj_array(
                     [var("%s%d" % (basename, i)) for i in range(self.dimensions)])
 
-        amplitude, origin, x, v = [make_vec(n) for n in "amplitude origin x v".split()]
-        epsilon, mu, omega, sigma = [var(f) for f in "epsilon mu omega sigma".split()]
-        sin, cos, sqrt, exp = [var(f) for f in "sin cos sqrt exp".split()]
-
-        c_inv = CommonSubexpression(sqrt(mu*epsilon))
-        norm_v_squared = CommonSubexpression(numpy.dot(v, v))
-        n = v/sqrt(norm_v_squared)
-        k = v*CommonSubexpression(omega/norm_v_squared) 
-
+        x = make_vec("x")
         t = var("t")
 
+        epsilon = self.epsilon
+        mu = self.mu
+        sigma = self.sigma
+        omega = self.omega
+
+        v = self.v
+        n = v/la.norm(v)
+        k = v*self.omega/numpy.dot(v,v)
+        amplitude = self.amplitude
+        origin = self.origin
+        print "k", k
+
+        sin, cos, sqrt, exp = [var(f) for f in "sin cos sqrt exp".split()]
+
+        c_inv = sqrt(mu*epsilon)
+
+        from pymbolic.primitives import CommonSubexpression
         modulation = CommonSubexpression(
-            sin(numpy.dot(k, x) - omega*t)
-            * exp(-numpy.dot(v, x)**2/(2*sigma**2))
+            cos(numpy.dot(k, x) - omega*t)
+            * 
+            exp(-numpy.dot(n, x-origin)**2/(2*sigma**2))
             )
 
         e = amplitude * modulation
+
+        from hedge.backends.cuda.vector_expr import CompiledVectorExpression
         from hedge.tools import join_fields
-        return join_fields(
-                e,
-                c_inv*numpy.cross(n, e),)
+
+        def type_getter(expr):
+            from pymbolic import get_dependencies
+            from pymbolic.primitives import Variable
+            deps = get_dependencies(expr, composite_leaves=False)
+            var, = deps
+            assert isinstance(var, Variable)
+            return var.name.startswith("x"), discr.default_scalar_type, 
+
+        return CompiledVectorExpression(
+                join_fields(e, c_inv*numpy.cross(n, e)),
+                type_getter, discr.default_scalar_type,
+                allocator=discr.pool.allocate)
+
 
     def boundary_interpolant(self, t, discr, tag):
         try:
             nodes = self.nodes_cache[discr, tag]
         except KeyError:
+            from hedge.tools import make_obj_array
             nodes = discr.boundary_to_gpu(
-                    tag, discr.get_boundary(tag).nodes)
+                    tag, make_obj_array(
+                        discr.get_boundary(tag).nodes
+                        .T.astype(discr.default_scalar_type)))
             self.nodes_cache[discr, tag] = nodes
 
-        raise RuntimeError("none")
+        ctx = {"t": t}
+        for i, xi in enumerate(nodes):
+            ctx["x%d" % i] = xi
+
+        from pymbolic.primitives import Variable
+        def lookup_value(expr):
+            assert isinstance(expr, Variable)
+            return ctx[expr.name]
+
+        result = self.make_func(discr)(lookup_value)
+        #print la.norm(result[0].get())
+        #raw_input()
+        #print discr.boundary_from_gpu(tag, result[0])
+        #print discr.gpu_boundary_embedding(tag)
+        #raw_input()
+        return result
 
 
 
@@ -121,7 +166,8 @@ def main():
     def make_mesh():
         from meshpy.geometry import GeometryBuilder, make_ball
         geob = GeometryBuilder()
-        ball_points, ball_facets, ball_facet_hole_starts, _ = make_ball(0.5)
+        ball_points, ball_facets, ball_facet_hole_starts, _ = make_ball(0.5,
+                subdivisions=10)
         geob.add_geometry(ball_points, ball_facets, ball_facet_hole_starts, 
                 facet_markers=1)
         geob.wrap_in_box(pml_width)
@@ -160,11 +206,9 @@ def main():
         origin=numpy.array([0,0,0]),
         epsilon=epsilon,
         mu=mu,
-        v=0.5/sqrt(mu*epsilon)*numpy.array([0,0,1]),
-        omega=1e7,
+        v=0.99/sqrt(mu*epsilon)*numpy.array([0,0,1]),
+        omega=0.3e9*2*pi,
         sigma=0.2)
-
-    ibc.exprs()
 
     from hedge.pde import GedneyPMLMaxwellOperator
     op = GedneyPMLMaxwellOperator(epsilon, mu, 
@@ -256,7 +300,7 @@ def main():
         logmgr.tick()
 
         if options.vis_interval and step % options.vis_interval == 0:
-            e, h = op.split_eh(fields[0])
+            e, h = op.split_eh(fields)
             visf = vis.make_file("em-%d-%04d" % (options.order, step))
             vis.add_data(visf,
                     [ ("e", 
