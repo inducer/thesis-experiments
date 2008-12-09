@@ -34,10 +34,6 @@ def pml_experiment():
                                 ])
 
                             job.submit()
-                            raw_input()
-
-                            from time import sleep
-                            sleep(0.1)
 
 if __name__ == "__main__":
     pml_experiment()

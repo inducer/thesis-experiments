@@ -217,7 +217,6 @@ def main():
 
     for step in range(nsteps):
         logmgr.tick()
-        logmgr.save()
 
         if step % 50 == 0:
             e, h, p, q = op.split_ehpq(fields)
@@ -245,6 +244,8 @@ def main():
 
         fields = stepper(fields, t, dt, rhs)
         t += dt
+
+    logmgr.close()
 
 if __name__ == "__main__":
     main()
