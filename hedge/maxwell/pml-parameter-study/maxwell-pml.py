@@ -147,11 +147,11 @@ def main():
             pec_tag = TAG_ALL
             absorb_tag = TAG_NONE
 
-        return AbarbanelGottliebPMLTMMaxwellOperator(epsilon, mu, flux_type=1,
+        return AbarbanelGottliebPMLTEMaxwellOperator(epsilon, mu, flux_type=1,
                 current=Current(),
                 pec_tag=pec_tag,
                 absorb_tag=absorb_tag,
-                use_damping=True
+                add_decay=True
                 )
 
     op = make_op()
