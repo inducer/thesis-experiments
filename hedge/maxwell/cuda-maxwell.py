@@ -120,24 +120,15 @@ def main():
         for f in options.debug_flags.split(","):
             debug_flags.append(f)
 
-    from hedge.backends.dynamic import Discretization as CPUDiscretization
+    from hedge.backends.jit import Discretization as CPUDiscretization
     from hedge.backends.cuda import Discretization as GPUDiscretization
     if options.cpu:
         discr = CPUDiscretization(mesh, order=options.order, debug=debug_flags)
 
-        def to_gpu(x):
-            return x
-        def from_gpu(x):
-            return x
         cpu_discr = discr
     else:
         discr = GPUDiscretization(mesh, order=options.order, debug=debug_flags,
                 tune_for=op.op_template())
-
-        def to_gpu(x):
-            return discr.volume_to_gpu(x)
-        def from_gpu(x):
-            return discr.volume_from_gpu(x)
 
         cpu_discr = CPUDiscretization(mesh, order=options.order)
 
@@ -147,8 +138,8 @@ def main():
         vis = SiloVisualizer(discr, rcon)
 
     mode.set_time(0)
-    boxed_fields = [to_gpu(to_obj_array(mode(discr)
-        .real.astype(discr.default_scalar_type)))]
+    boxed_fields = [discr.convert_volume(to_obj_array(mode(discr)
+        .real.astype(discr.default_scalar_type)), kind=discr.compute_kind)]
 
     dt = discr.dt_factor(op.max_eigenvalue())
     if options.steps is None:
@@ -207,18 +198,11 @@ def main():
             if options.vis_interval and step % options.vis_interval == 0:
                 e, h = op.split_eh(boxed_fields[0])
                 visf = vis.make_file("em-%d-%04d" % (options.order, step))
-                vis.add_data(visf,
-                        [ ("e", 
-                            #e
-                            from_gpu(e)
-                            ), 
-                            ("h", 
-                                #h
-                                from_gpu(h)
-                                ), 
-                            ],
-                        time=boxed_t[0], step=step
-                        )
+                vis.add_data(visf, [ 
+                    ("e", discr.convert_volume(e, kind="numpy")), 
+                    ("h", discr.convert_volume(h, kind="numpy")), 
+                    ],
+                    time=boxed_t[0], step=step)
                 visf.close()
 
             boxed_fields[0] = stepper(boxed_fields[0], boxed_t[0], dt, rhs)
@@ -248,7 +232,7 @@ def main():
     total_diff = 0
     total_true = 0
     for i, (f, cpu_tf) in enumerate(zip(fields, true_fields)):
-        cpu_f = from_gpu(f).astype(numpy.float64)
+        cpu_f = discr.convert_volume(f, kind="numpy").astype(numpy.float64)
 
         l2_diff = cpu_discr.norm(cpu_f-cpu_tf) 
         l2_true = cpu_discr.norm(cpu_tf)

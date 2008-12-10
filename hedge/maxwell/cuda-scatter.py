@@ -25,55 +25,6 @@ from pytools import memoize_method
 
 
 
-def get_mesquite_tet_points(points, elements):
-    in_name = "_mesquite_in.vtk"
-    out_name = "_mesquite_out.vtk"
-
-    def generate_faces():
-        for v1, v2, v3, v4 in elements:
-            yield frozenset([v1,v2,v3])
-            yield frozenset([v1,v2,v4])
-            yield frozenset([v1,v3,v4])
-            yield frozenset([v2,v3,v4])
-
-    face_histogram = {}
-
-    for f in generate_faces():
-        face_histogram[f] = face_histogram.get(f, 0) + 1
-
-    boundary_vertices = set()
-    for face, count in face_histogram.iteritems():
-        if count == 1:
-            # a boundary face
-            boundary_vertices |= set(face)
-
-    is_boundary = [1 if i in boundary_vertices else 0
-            for i in range(len(points))]
-
-    from pyvtk import VtkData, UnstructuredGrid, PointData, Scalars
-    vtkelements = VtkData(
-        UnstructuredGrid(
-          numpy.array(points), 
-          tetra=numpy.array(elements)),
-        "Mesh",
-        PointData(
-            Scalars(numpy.array(is_boundary), name="fixed" )))
-    vtkelements.tofile(in_name)
-
-    from os import system, unlink
-    if system("mesquite %s %s" % (in_name, out_name)):
-        from warnings import warn
-        warn("mesquite invocation failed")
-        return points
-
-    result = VtkData(out_name).structure.points
-    unlink(in_name)
-    unlink(out_name)
-    return result
-
-
-
-
 def make_swizzle_matrix(spec):
     axes = ["x", "y", "z"]
 
@@ -166,9 +117,9 @@ class WindowedPlaneWave:
         from hedge.tools import join_fields
 
         def type_getter(expr):
-            from pymbolic import get_dependencies
+            from pymbolic.mapper.dependency import DependencyMapper
             from pymbolic.primitives import Variable
-            deps = get_dependencies(expr, composite_leaves=False)
+            deps = DependencyMapper(composite_leaves=False)(expr)
             var, = deps
             assert isinstance(var, Variable)
             return var.name.startswith("x"), discr.default_scalar_type, 
@@ -195,9 +146,10 @@ class WindowedPlaneWave:
             nodes = self.nodes_cache[discr]
         except KeyError:
             from hedge.tools import make_obj_array
-            nodes = discr.volume_to_gpu(
+            nodes = discr.convert_volume(
                     make_obj_array(discr.nodes.T.astype(
-                        discr.default_scalar_type)))
+                        discr.default_scalar_type)),
+                    kind=discr.compute_kind)
             self.nodes_cache[discr] = nodes
 
         return self(t, nodes, discr)
@@ -210,8 +162,9 @@ class WindowedPlaneWave:
             from hedge.tools import make_obj_array
             bnodes = discr.get_boundary(tag).nodes
             assert len(bnodes), "no scatterer boundary--that's kind of bad"
-            nodes = discr.boundary_to_gpu(
-                    tag, make_obj_array(bnodes.T.astype(discr.default_scalar_type)))
+            nodes = discr.convert_boundary(
+                    make_obj_array(bnodes.T.astype(discr.default_scalar_type)),
+                    tag, kind=discr.compute_kind)
             self.nodes_cache[discr, tag] = nodes
 
         return self(t, nodes, discr)
@@ -261,11 +214,13 @@ def main():
                     points=[pt[:3] for pt in data["vertex"].data],
                     facets=[fd[0] for fd in data["face"].data],
                     facet_markers=1)
+            free_space_factor = 1
         else:
             ball_points, ball_facets, ball_facet_hole_starts, _ = make_ball(0.5,
-                    subdivisions=25)
+                    subdivisions=15)
             geob.add_geometry(ball_points, ball_facets, ball_facet_hole_starts, 
                     facet_markers=1)
+            free_space_factor = 1
 
         if options.swizzle is not None:
             mtx = make_swizzle_matrix(options.swizzle)
@@ -273,7 +228,7 @@ def main():
 
         bbox_min, bbox_max = geob.bounding_box()
         pml_width = la.norm(bbox_max-bbox_min)*options.pml_factor
-        geob.wrap_in_box(pml_width)
+        geob.wrap_in_box(free_space_factor*pml_width)
         geob.wrap_in_box(pml_width)
 
         from meshpy.tet import MeshInfo, build
@@ -295,8 +250,7 @@ def main():
 
         from hedge.mesh import make_conformal_mesh
         return make_conformal_mesh(
-                get_mesquite_tet_points(built_mi.points, built_mi.elements),
-                #built_mi.points,
+                built_mi.points,
                 built_mi.elements, 
                 boundary_tagger), pml_width
 
@@ -312,17 +266,17 @@ def main():
 
     ibc = WindowedPlaneWave(
         amplitude=numpy.array([1,0,0]),
-        origin=numpy.array([0,0,mesh_min[2]]),
+        origin=numpy.array([0,0,mesh_min[2]-1]),
         epsilon=epsilon,
         mu=mu,
         v=0.99/sqrt(mu*epsilon)*numpy.array([0,0,1]),
-        omega=0.7e9*2*pi,
+        omega=0.2e9*2*pi,
         sigma=1)
 
-    final_time = mesh_size[2]/la.norm(ibc.v)
+    final_time = (mesh_size[2]+2)/la.norm(ibc.v)
 
-    from hedge.pde import GedneyPMLMaxwellOperator
-    op = GedneyPMLMaxwellOperator(epsilon, mu, 
+    from hedge.pde import AbarbanelGottliebPMLMaxwellOperator
+    op = AbarbanelGottliebPMLMaxwellOperator(epsilon, mu, 
             incident_tag="scatterer",
             pec_tag="outside",
             incident_bc=ibc,
@@ -337,19 +291,10 @@ def main():
     if options.cpu:
         discr = CPUDiscretization(mesh, order=options.order, debug=debug_flags)
 
-        def to_gpu(x):
-            return x
-        def from_gpu(x):
-            return x
         cpu_discr = discr
     else:
         discr = GPUDiscretization(mesh, order=options.order, debug=debug_flags,
                 tune_for=op.op_template())
-
-        def to_gpu(x):
-            return discr.volume_to_gpu(x)
-        def from_gpu(x):
-            return discr.volume_from_gpu(x)
 
         cpu_discr = CPUDiscretization(mesh, order=options.order)
 
@@ -360,7 +305,7 @@ def main():
                 compressor="zlib")
         #vis = SiloVisualizer(discr, rcon)
 
-    dt = discr.dt_factor(op.max_eigenvalue())
+    dt = discr.dt_factor(op.max_eigenvalue()) 
     if options.steps is None:
         nsteps = int(final_time/dt)+1
         dt = final_time/nsteps
@@ -407,9 +352,12 @@ def main():
 
     # timestep loop -------------------------------------------------------
 
-    rhs = op.bind(discr, sigma=to_gpu(op.sigma_from_width(discr, pml_width)))
+    rhs = op.bind(discr, 
+            op.coefficients_from_width(discr, pml_width, 
+                dtype=discr.default_scalar_type).map(
+                    lambda f: discr.convert_volume(f, kind=discr.compute_kind)))
 
-    fields = op.assemble_ehdb(discr=discr)
+    fields = op.assemble_ehpq(discr=discr)
 
     for step in xrange(nsteps):
         logmgr.tick()
@@ -420,14 +368,17 @@ def main():
             incident_e, incident_h = op.split_eh(ibc.volume_interpolant(t, discr))
             vis.add_data(visf,
                     [ 
-                        ("e", from_gpu(e)), 
-                        ("h", from_gpu(h)), 
-                        ("inc_e", from_gpu(incident_e)), 
-                        ("inc_h", from_gpu(incident_h)), 
+                        ("e", discr.convert_volume(e, kind="numpy")), 
+                        ("h", discr.convert_volume(h, kind="numpy")), 
+                        ("inc_e", discr.convert_volume(incident_e, kind="numpy")), 
+                        ("inc_h", discr.convert_volume(incident_h, kind="numpy")), 
                         ],
                     time=t, step=step
                     )
             visf.close()
+
+        if step % 100 == 0:
+            print [la.norm(discr.convert_volume(f, kind="numpy")) for f in fields]
 
         fields = stepper(fields, t, dt, rhs)
         t += dt
