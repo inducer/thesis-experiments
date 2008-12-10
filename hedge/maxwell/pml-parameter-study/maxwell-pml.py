@@ -91,9 +91,9 @@ def main():
     cylindrical = False
     periodic = False
 
-    #mesh = make_mesh(a=numpy.array((-1,-1,-1)), b=numpy.array((1,1,1)), 
+    mesh = make_mesh(a=numpy.array((-1,-1,-1)), b=numpy.array((1,1,1)), 
     #mesh = make_mesh(a=numpy.array((-3,-3)), b=numpy.array((3,3)), 
-    mesh = make_mesh(a=numpy.array((-1,-1)), b=numpy.array((1,1)), 
+    #mesh = make_mesh(a=numpy.array((-1,-1)), b=numpy.array((1,1)), 
     #mesh = make_mesh(a=numpy.array((-2,-2)), b=numpy.array((2,2)), 
             pml_width=setup.pml_width, max_volume=setup.max_vol)
 
@@ -147,7 +147,7 @@ def main():
             pec_tag = TAG_ALL
             absorb_tag = TAG_NONE
 
-        return AbarbanelGottliebPMLTEMaxwellOperator(epsilon, mu, flux_type=1,
+        return AbarbanelGottliebPMLMaxwellOperator(epsilon, mu, flux_type=1,
                 current=Current(),
                 pec_tag=pec_tag,
                 absorb_tag=absorb_tag,
