@@ -214,7 +214,7 @@ def main():
                     points=[pt[:3] for pt in data["vertex"].data],
                     facets=[fd[0] for fd in data["face"].data],
                     facet_markers=1)
-            free_space_factor = 1
+            free_space_factor = 1.5
         else:
             ball_points, ball_facets, ball_facet_hole_starts, _ = make_ball(0.5,
                     subdivisions=15)
@@ -229,7 +229,7 @@ def main():
         bbox_min, bbox_max = geob.bounding_box()
         pml_width = la.norm(bbox_max-bbox_min)*options.pml_factor
         geob.wrap_in_box(free_space_factor*pml_width)
-        geob.wrap_in_box(pml_width)
+        #geob.wrap_in_box(pml_width)
 
         from meshpy.tet import MeshInfo, build
         mi = MeshInfo()
@@ -275,10 +275,13 @@ def main():
 
     final_time = (mesh_size[2]+2)/la.norm(ibc.v)
 
-    from hedge.pde import AbarbanelGottliebPMLMaxwellOperator
-    op = AbarbanelGottliebPMLMaxwellOperator(epsilon, mu, 
+    from hedge.pde import MaxwellOperator
+    from hedge.mesh import TAG_NONE
+    #from hedge.pde import AbarbanelGottliebPMLMaxwellOperator
+    op = MaxwellOperator(epsilon, mu, 
             incident_tag="scatterer",
-            pec_tag="outside",
+            pec_tag=TAG_NONE,
+            absorb_tag="outside",
             incident_bc=ibc,
             flux_type=1)
 
@@ -286,7 +289,7 @@ def main():
     if options.debug_flags:
         debug_flags.extend(options.debug_flags.split(","))
 
-    from hedge.backends.dynamic import Discretization as CPUDiscretization
+    from hedge.backends.jit import Discretization as CPUDiscretization
     from hedge.backends.cuda import Discretization as GPUDiscretization
     if options.cpu:
         discr = CPUDiscretization(mesh, order=options.order, debug=debug_flags)
@@ -353,11 +356,17 @@ def main():
     # timestep loop -------------------------------------------------------
 
     rhs = op.bind(discr, 
-            op.coefficients_from_width(discr, pml_width, 
-                dtype=discr.default_scalar_type).map(
-                    lambda f: discr.convert_volume(f, kind=discr.compute_kind)))
+            #op.coefficients_from_width(discr, pml_width, 
+                #dtype=discr.default_scalar_type).map(
+                    #lambda f: discr.convert_volume(f, kind=discr.compute_kind))
+                )
 
-    fields = op.assemble_ehpq(discr=discr)
+    #fields = op.assemble_ehpq(discr=discr)
+    fields = op.assemble_eh(discr=discr)
+
+    scatterer_bdry = discr.boundary_zeros("scatterer", kind="numpy")
+    scatterer_bdry.fill(1)
+    scatterer_bdry = discr.volumize_boundary_field(scatterer_bdry, "scatterer")
 
     for step in xrange(nsteps):
         logmgr.tick()
@@ -372,13 +381,14 @@ def main():
                         ("h", discr.convert_volume(h, kind="numpy")), 
                         ("inc_e", discr.convert_volume(incident_e, kind="numpy")), 
                         ("inc_h", discr.convert_volume(incident_h, kind="numpy")), 
+                        ("scatterer", scatterer_bdry), 
                         ],
                     time=t, step=step
                     )
             visf.close()
 
-        if step % 100 == 0:
-            print [la.norm(discr.convert_volume(f, kind="numpy")) for f in fields]
+        #if step % 100 == 0:
+            #print [la.norm(discr.convert_volume(f, kind="numpy")) for f in fields]
 
         fields = stepper(fields, t, dt, rhs)
         t += dt
