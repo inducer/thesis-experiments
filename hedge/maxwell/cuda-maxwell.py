@@ -59,6 +59,7 @@ def main():
 
     from optparse import OptionParser
     parser = OptionParser()
+    parser.add_option("--single", action="store_true")
     parser.add_option("--order", default=4, type="int")
     parser.add_option("--h", default=0.08, type="float")
     parser.add_option("--final-time", default=4e-10, type="float")
@@ -87,11 +88,11 @@ def main():
             mesh = make_cylinder_mesh(radius=R, height=d, max_volume=0.01)
     else:
         if periodic:
-            mode = RectangularWaveguideMode(epsilon, mu, (3,2,1))
+            mode = RectangularWaveguideMode(epsilon, mu, (5,4,3))
             periodicity = (False, False, True)
         else:
             periodicity = None
-        mode = RectangularCavityMode(epsilon, mu, (1,2,2))
+        mode = RectangularCavityMode(epsilon, mu, (3,3,2))
 
         if rcon.is_head_rank:
             mesh = make_box_mesh(max_volume=options.h**3/6, periodicity=periodicity)
@@ -123,7 +124,8 @@ def main():
     from hedge.backends.jit import Discretization as CPUDiscretization
     from hedge.backends.cuda import Discretization as GPUDiscretization
     if options.cpu:
-        discr = CPUDiscretization(mesh, order=options.order, debug=debug_flags)
+        discr = CPUDiscretization(mesh, order=options.order, debug=debug_flags,
+                default_scalar_type=numpy.float32 if options.single else numpy.float64)
 
         cpu_discr = discr
     else:
