@@ -92,7 +92,7 @@ def main():
             periodicity = (False, False, True)
         else:
             periodicity = None
-        mode = RectangularCavityMode(epsilon, mu, (3,3,2))
+        mode = RectangularCavityMode(epsilon, mu, (4,3,3))
 
         if rcon.is_head_rank:
             mesh = make_box_mesh(max_volume=options.h**3/6, periodicity=periodicity)
