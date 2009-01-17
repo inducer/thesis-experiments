@@ -25,63 +25,62 @@ import numpy.linalg as la
 
 
 def main() :
-    from hedge.element import \
-            IntervalElement, \
-            TriangularElement, \
-            TetrahedralElement
-    from hedge.timestep import RK4TimeStepper, AdamsBashforthTimeStepper
     from hedge.visualization import SiloVisualizer, VtkVisualizer
     from pytools.stopwatch import Job
     from math import sin, cos, pi, exp, sqrt
-    from hedge.parallel import guess_parallelization_context
+    from hedge.backends import guess_run_context
 
-    pcon = guess_parallelization_context()
+    rcon = guess_run_context()
+    cpu_rcon = guess_run_context(disable=set(["cuda"]))
 
-    dim = 3
+    dim = 2
 
     if dim == 1:
-        if pcon.is_head_rank:
+        if rcon.is_head_rank:
             from hedge.mesh import make_uniform_1d_mesh
             mesh = make_uniform_1d_mesh(-10, 10, 500)
 
-        el_class = IntervalElement
     elif dim == 2:
         from hedge.mesh import \
                 make_disk_mesh, \
                 make_regular_square_mesh, \
                 make_square_mesh, \
                 make_rect_mesh
-        if pcon.is_head_rank:
+        if rcon.is_head_rank:
             #mesh = make_disk_mesh(max_area=5e-3)
             #mesh = make_regular_square_mesh(
                     #n=9, periodicity=(True,True))
             mesh = make_rect_mesh(a=(-0.5,-0.5),b=(3.5,0.5),max_area=0.008)
             #mesh.transform(Rotation(pi/8))
-        el_class = TriangularElement
     elif dim == 3:
         from hedge.mesh import make_ball_mesh
-        if pcon.is_head_rank:
+        if rcon.is_head_rank:
             mesh = make_ball_mesh(max_volume=0.005)
-        el_class = TetrahedralElement
     else:
         raise RuntimeError, "bad number of dimensions"
 
-    if pcon.is_head_rank:
+    if rcon.is_head_rank:
         print "%d elements" % len(mesh.elements)
-        mesh_data = pcon.distribute_mesh(mesh)
+        mesh_data = rcon.distribute_mesh(mesh)
     else:
-        mesh_data = pcon.receive_mesh()
+        mesh_data = rcon.receive_mesh()
 
-    from hedge.cuda import Discretization
     #from hedge.discr_precompiled import Discretization
-    discr = pcon.make_discretization(mesh_data, order=4, 
-            discr_class=Discretization, #debug=True
+    discr = rcon.make_discretization(mesh_data, order=4,
+            debug=[
+                "cuda_no_plan",
+                "cuda_dumpkernels",
+                ]
             )
+    cpu_discr = cpu_rcon.make_discretization(mesh_data, order=4,
+            default_scalar_type=numpy.float32)
 
+    from hedge.timestep import RK4TimeStepper
     stepper = RK4TimeStepper()
+
     #stepper = AdamsBashforthTimeStepper(1)
-    #vis = VtkVisualizer(discr, pcon, "fld")
-    vis = SiloVisualizer(discr, pcon)
+    #vis = VtkVisualizer(discr, rcon, "fld")
+    vis = SiloVisualizer(discr, rcon)
 
     def source_u(x, el):
         return exp(-numpy.dot(x, x)*128)
@@ -94,13 +93,31 @@ def main() :
 
     from hedge.pde import StrongWaveOperator
     from hedge.mesh import TAG_ALL, TAG_NONE
-    op = StrongWaveOperator(-1, discr, 
+    op = StrongWaveOperator(-1, discr.dimensions, 
             source_vec_getter,
             dirichlet_tag=TAG_ALL,
             neumann_tag=TAG_NONE,
             radiation_tag=TAG_NONE,
             flux_type="upwind",
             )
+
+    # cpu
+    source_u_vec_cpu = cpu_discr.interpolate_volume_function(source_u)
+
+    def source_vec_getter_cpu(t):
+        from math import sin
+        return source_u_vec_cpu*sin(10*t)
+
+    from hedge.pde import StrongWaveOperator
+    from hedge.mesh import TAG_ALL, TAG_NONE
+    cpu_op = StrongWaveOperator(-1, discr.dimensions, 
+            source_vec_getter_cpu,
+            dirichlet_tag=TAG_ALL,
+            neumann_tag=TAG_NONE,
+            radiation_tag=TAG_NONE,
+            flux_type="upwind",
+            )
+    # end cpu
 
     from hedge.tools import join_fields
     fields = join_fields(discr.volume_zeros(),
@@ -111,7 +128,8 @@ def main() :
 
     dt = discr.dt_factor(op.max_eigenvalue())
     nsteps = int(10/dt)
-    if pcon.is_head_rank:
+
+    if rcon.is_head_rank:
         print "dt", dt
         print "nsteps", nsteps
 
@@ -121,7 +139,7 @@ def main() :
             add_simulation_quantities, \
             add_run_info
 
-    logmgr = LogManager("wave.dat", "w", pcon.communicator)
+    logmgr = LogManager("wave.dat", "w", rcon.communicator)
     add_run_info(logmgr)
     add_general_quantities(logmgr)
     add_simulation_quantities(logmgr, dt)
@@ -137,33 +155,58 @@ def main() :
     #logmgr.add_quantity(LpNorm(u_getter, discr, 1, name="l1_u"))
     #logmgr.add_quantity(LpNorm(u_getter, discr, name="l2_u"))
 
-    logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", "t_diff_op+t_inner_flux"])
+    logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
+        ("t_compute", "t_diff.max+t_gather.max+t_lift.max+t_vector_math.max"),
+        ("flops/s", "(n_flops_gather.sum+n_flops_lift.sum+n_flops_mass.sum+n_flops_diff.sum+n_flops_vector_math.sum)"
+        "/(t_gather.max+t_lift.max+t_mass.max+t_diff.max+t_vector_math.max)")
+        ])
 
     # timestep loop -----------------------------------------------------------
+    rhs = op.bind(discr)
+    cpu_rhs = cpu_op.bind(cpu_discr)
+    from hedge.backends.cuda import make_block_visualization
+    bvis = make_block_visualization(discr)
+
     for step in range(nsteps):
         logmgr.tick()
 
         t = step*dt
 
-        if step % 10 == 0:
+        if step % 3 == 0:
             visf = vis.make_file("fld-%04d" % step)
 
+            cpu_fields = discr.convert_volume(fields, kind="numpy")
+            true_rhs = cpu_rhs(t, cpu_fields)
+            gpu_rhs = discr.convert_volume(rhs(t, fields), kind="numpy")
+
+            from pylo import DB_VARTYPE_VECTOR
             vis.add_data(visf,
                     [
-                        ("u", discr.volume_from_gpu(fields[0])),
-                        ("v", discr.volume_from_gpu(fields[1:])), 
+                        ("u", discr.convert_volume(fields[0], kind="numpy")),
+                        ("v", discr.convert_volume(fields[1:], kind="numpy")), 
+                        ("rhs_u", gpu_rhs[0]),
+                        ("rhs_v", gpu_rhs[1:]), 
+                        ("trhs_u", true_rhs[0]),
+                        ("trhs_v", true_rhs[1:]), 
+                        ("blockvis", bvis),
                     ],
+                    expressions=[
+                        ("rhsdiff_u", "rhs_u-trhs_u"),
+                        ("rhsdiff_v", "rhs_v-trhs_v", DB_VARTYPE_VECTOR),
+                        ],
                     time=t,
                     #scale_factor=2e1,
                     step=step)
             visf.close()
 
-        fields = stepper(fields, t, dt, op.rhs)
+        fields = stepper(fields, t, dt, rhs)
 
     vis.close()
 
     logmgr.tick()
     logmgr.save()
+
+    discr.close()
 
 if __name__ == "__main__":
     #import cProfile as profile
