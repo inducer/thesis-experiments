@@ -188,23 +188,6 @@ def main():
             logmgr.tick()
             from pycuda.driver import mem_get_info
 
-            pool = discr.subdiscr.pool
-            #pool = discr.pool
-            free, total = mem_get_info()
-            #print "rank %d: total: %g free:%f held:%f active:%f" % (
-                    #rcon.rank, total, free/total,
-                    #pool.held_size/total, pool.active_size/total)
-            print >> pool.logfile, "----------step-bdry-----------"
-            #gc.collect()
-            from pycuda._driver import PooledDeviceAllocation
-            #pdos = [obj for obj in gc.get_objects()
-                    #if isinstance(obj, PooledDeviceAllocation)]
-            #print len(pdos), pool.held_blocks, pool.active_blocks
-            if rcon.rank == 0 and step > 10 and False:
-                from pytools.refdebug import refdebug
-                for pdo in pdos:
-                    refdebug(pdo, exclude=[pdos])
-
             if options.vis_interval and step % options.vis_interval == 0:
                 e, h = op.split_eh(boxed_fields[0])
                 visf = vis.make_file("em-%d-%04d" % (options.order, step))
