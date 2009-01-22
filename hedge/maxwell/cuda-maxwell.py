@@ -46,6 +46,7 @@ def main():
     from hedge.backends import guess_run_context
 
     rcon = guess_run_context()
+    cpu_rcon = guess_run_context(disable=set(["cuda"]))
 
     epsilon0 = 8.8541878176e-12 # C**2 / (N m**2)
     mu0 = 4*pi*1e-7 # N/A**2.
@@ -54,7 +55,6 @@ def main():
 
     eoc_rec = EOCRecorder()
 
-    cylindrical = False
     periodic = False
 
     from optparse import OptionParser
@@ -71,35 +71,24 @@ def main():
     options, args = parser.parse_args()
     assert not args
 
-    print "----------------------------------------------------------------"
-    print "ORDER %d" % options.order
-    print "----------------------------------------------------------------"
+    if rcon.is_head_rank:
+        print "----------------------------------------------------------------"
+        print "ORDER %d" % options.order
+        print "----------------------------------------------------------------"
 
-    if cylindrical:
-        R = 1
-        d = 2
-        mode = CylindricalCavityMode(m=1, n=1, p=1,
-                radius=R, height=d, 
-                epsilon=epsilon, mu=mu)
-        r_sol = CartesianAdapter(RealPartAdapter(mode))
-        c_sol = SplitComplexAdapter(CartesianAdapter(mode))
-
-        if rcon.is_head_rank:
-            mesh = make_cylinder_mesh(radius=R, height=d, max_volume=0.01)
+    if periodic:
+        mode = RectangularWaveguideMode(epsilon, mu, (5,4,3))
+        periodicity = (False, False, True)
     else:
-        if periodic:
-            mode = RectangularWaveguideMode(epsilon, mu, (5,4,3))
-            periodicity = (False, False, True)
-        else:
-            periodicity = None
-        mode = RectangularCavityMode(epsilon, mu, (4,3,3))
+        periodicity = None
+    mode = RectangularCavityMode(epsilon, mu, (4,3,3))
 
-        if rcon.is_head_rank:
-            mesh = make_box_mesh(max_volume=options.h**3/6, periodicity=periodicity)
-            #mesh = make_box_mesh(max_volume=0.0007, periodicity=periodicity)
-                    #return_meshpy_mesh=True
-            #meshpy_mesh.write_neu(open("box.neu", "w"), 
-                    #bc={frozenset(range(1,7)): ("PEC", 1)})
+    if rcon.is_head_rank:
+        mesh = make_box_mesh(max_volume=options.h**3/6, periodicity=periodicity)
+        #mesh = make_box_mesh(max_volume=0.0007, periodicity=periodicity)
+                #return_meshpy_mesh=True
+        #meshpy_mesh.write_neu(open("box.neu", "w"), 
+                #bc={frozenset(range(1,7)): ("PEC", 1)})
 
     if rcon.is_head_rank:
         mesh_data = rcon.distribute_mesh(mesh)
@@ -124,16 +113,15 @@ def main():
     from hedge.backends.jit import Discretization as CPUDiscretization
     from hedge.backends.cuda import Discretization as GPUDiscretization
     if options.cpu:
-        discr = CPUDiscretization(mesh, order=options.order, debug=debug_flags,
+        discr = cpu_rcon.make_discretization(mesh_data, order=options.order, debug=debug_flags,
                 default_scalar_type=numpy.float32 if options.single else numpy.float64)
 
         cpu_discr = discr
     else:
-        discr = GPUDiscretization(mesh, order=options.order, debug=debug_flags,
+        discr = rcon.make_discretization(mesh_data, order=options.order, debug=debug_flags,
                 tune_for=op.op_template())
 
-        cpu_discr = CPUDiscretization(mesh, order=options.order)
-
+        cpu_discr = cpu_rcon.make_discretization(mesh_data, order=options.order)
 
     if options.vis_interval:
         #vis = VtkVisualizer(discr, rcon, "em-%d" % options.order)
@@ -181,9 +169,9 @@ def main():
             ])
     else:
         logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
-            ("t_compute", "t_diff+t_gather+t_lift+t_rk4+t_vector_math"),
-            ("flops/s", "(n_flops_gather+n_flops_lift+n_flops_mass+n_flops_diff+n_flops_vector_math+n_flops_rk4)"
-            "/(t_gather+t_lift+t_mass+t_diff+t_vector_math+t_rk4)")
+            ("t_compute", "t_diff.max+t_gather.max+t_lift.max+t_rk4.max+t_vector_math.max"),
+            ("flops/s", "(n_flops_gather.sum+n_flops_lift.sum+n_flops_mass.sum+n_flops_diff.sum+n_flops_vector_math.sum+n_flops_rk4.sum)"
+            "/(t_gather.max+t_lift.max+t_mass.max+t_diff.max+t_vector_math.max+t_rk4.max)")
             ])
 
     logmgr.set_constant("h", options.h)
@@ -193,9 +181,29 @@ def main():
 
     rhs = op.bind(discr)
 
+    import gc
+
     def timestep_loop():
         for step in range(nsteps):
             logmgr.tick()
+            from pycuda.driver import mem_get_info
+
+            pool = discr.subdiscr.pool
+            #pool = discr.pool
+            free, total = mem_get_info()
+            #print "rank %d: total: %g free:%f held:%f active:%f" % (
+                    #rcon.rank, total, free/total,
+                    #pool.held_size/total, pool.active_size/total)
+            print >> pool.logfile, "----------step-bdry-----------"
+            #gc.collect()
+            from pycuda._driver import PooledDeviceAllocation
+            #pdos = [obj for obj in gc.get_objects()
+                    #if isinstance(obj, PooledDeviceAllocation)]
+            #print len(pdos), pool.held_blocks, pool.active_blocks
+            if rcon.rank == 0 and step > 10 and False:
+                from pytools.refdebug import refdebug
+                for pdo in pdos:
+                    refdebug(pdo, exclude=[pdos])
 
             if options.vis_interval and step % options.vis_interval == 0:
                 e, h = op.split_eh(boxed_fields[0])
@@ -234,7 +242,7 @@ def main():
     total_diff = 0
     total_true = 0
     for i, (f, cpu_tf) in enumerate(zip(fields, true_fields)):
-        cpu_f = discr.convert_volume(f, kind="numpy").astype(numpy.float64)
+        cpu_f = discr.convert_volume(f, kind="numpy")
 
         l2_diff = cpu_discr.norm(cpu_f-cpu_tf) 
         l2_true = cpu_discr.norm(cpu_tf)
@@ -243,9 +251,13 @@ def main():
         total_true += l2_true**2
 
     relerr = relative_error(total_diff**0.5, total_true**0.5)
-    print "rel L2 error: %g" % relerr
     logmgr.set_constant("relerr", relerr)
     logmgr.close()
+
+    if rcon.is_head_rank:
+        print "rel L2 error: %g" % relerr
+
+    discr.close()
 
 if __name__ == "__main__":
     main()

@@ -25,13 +25,11 @@ import numpy.linalg as la
 
 
 def main() :
-    from hedge.visualization import SiloVisualizer, VtkVisualizer
     from pytools.stopwatch import Job
     from math import sin, cos, pi, exp, sqrt
     from hedge.backends import guess_run_context
 
     rcon = guess_run_context()
-    cpu_rcon = guess_run_context(disable=set(["cuda"]))
 
     dim = 2
 
@@ -47,10 +45,10 @@ def main() :
                 make_square_mesh, \
                 make_rect_mesh
         if rcon.is_head_rank:
-            #mesh = make_disk_mesh(max_area=5e-3)
+            mesh = make_disk_mesh(max_area=5e-3)
             #mesh = make_regular_square_mesh(
                     #n=9, periodicity=(True,True))
-            mesh = make_rect_mesh(a=(-0.5,-0.5),b=(3.5,0.5),max_area=0.008)
+            #mesh = make_rect_mesh(a=(-0.5,-0.5),b=(3.5,0.5),max_area=1e-2)
             #mesh.transform(Rotation(pi/8))
     elif dim == 3:
         from hedge.mesh import make_ball_mesh
@@ -65,35 +63,13 @@ def main() :
     else:
         mesh_data = rcon.receive_mesh()
 
-    #from hedge.discr_precompiled import Discretization
-    discr = rcon.make_discretization(mesh_data, order=4,
-            debug=[
-                "cuda_no_plan",
-                "cuda_dumpkernels",
-                ]
-            )
-    cpu_discr = cpu_rcon.make_discretization(mesh_data, order=4,
-            default_scalar_type=numpy.float32)
-
-    from hedge.timestep import RK4TimeStepper
-    stepper = RK4TimeStepper()
-
-    #stepper = AdamsBashforthTimeStepper(1)
-    #vis = VtkVisualizer(discr, rcon, "fld")
-    vis = SiloVisualizer(discr, rcon)
-
-    def source_u(x, el):
-        return exp(-numpy.dot(x, x)*128)
-
-    source_u_vec = discr.interpolate_volume_function(source_u)
-
     def source_vec_getter(t):
         from math import sin
         return source_u_vec*sin(10*t)
 
     from hedge.pde import StrongWaveOperator
     from hedge.mesh import TAG_ALL, TAG_NONE
-    op = StrongWaveOperator(-1, discr.dimensions, 
+    op = StrongWaveOperator(-1, dim, 
             source_vec_getter,
             dirichlet_tag=TAG_ALL,
             neumann_tag=TAG_NONE,
@@ -101,23 +77,23 @@ def main() :
             flux_type="upwind",
             )
 
-    # cpu
-    source_u_vec_cpu = cpu_discr.interpolate_volume_function(source_u)
-
-    def source_vec_getter_cpu(t):
-        from math import sin
-        return source_u_vec_cpu*sin(10*t)
-
-    from hedge.pde import StrongWaveOperator
-    from hedge.mesh import TAG_ALL, TAG_NONE
-    cpu_op = StrongWaveOperator(-1, discr.dimensions, 
-            source_vec_getter_cpu,
-            dirichlet_tag=TAG_ALL,
-            neumann_tag=TAG_NONE,
-            radiation_tag=TAG_NONE,
-            flux_type="upwind",
+    discr = rcon.make_discretization(mesh_data, order=4,
+            debug=[
+                "cuda_no_plan",
+                "cuda_dumpkernels",
+                #"cuda_flux",
+                #"cuda_debugbuf",
+                ],
+            tune_for=op.op_template()
             )
-    # end cpu
+
+    from hedge.timestep import RK4TimeStepper
+    stepper = RK4TimeStepper()
+
+    def source_u(x, el):
+        return exp(-numpy.dot(x, x)*128)
+
+    source_u_vec = discr.interpolate_volume_function(source_u)
 
     from hedge.tools import join_fields
     fields = join_fields(discr.volume_zeros(),
@@ -132,6 +108,10 @@ def main() :
     if rcon.is_head_rank:
         print "dt", dt
         print "nsteps", nsteps
+
+    from hedge.visualization import SiloVisualizer, VtkVisualizer
+    #vis = VtkVisualizer(discr, rcon, "fld")
+    vis = SiloVisualizer(discr, rcon)
 
     # diagnostics setup -------------------------------------------------------
     from pytools.log import LogManager, \
@@ -163,32 +143,24 @@ def main() :
 
     # timestep loop -----------------------------------------------------------
     rhs = op.bind(discr)
-    cpu_rhs = cpu_op.bind(cpu_discr)
-    from hedge.backends.cuda import make_block_visualization
-    bvis = make_block_visualization(discr)
 
     for step in range(nsteps):
         logmgr.tick()
 
         t = step*dt
 
-        if step % 3 == 0:
+        if step % 10 == 0:
             visf = vis.make_file("fld-%04d" % step)
 
-            cpu_fields = discr.convert_volume(fields, kind="numpy")
-            true_rhs = cpu_rhs(t, cpu_fields)
-            gpu_rhs = discr.convert_volume(rhs(t, fields), kind="numpy")
+            my_rhs = rhs(t, fields)
 
             from pylo import DB_VARTYPE_VECTOR
             vis.add_data(visf,
                     [
                         ("u", discr.convert_volume(fields[0], kind="numpy")),
                         ("v", discr.convert_volume(fields[1:], kind="numpy")), 
-                        ("rhs_u", gpu_rhs[0]),
-                        ("rhs_v", gpu_rhs[1:]), 
-                        ("trhs_u", true_rhs[0]),
-                        ("trhs_v", true_rhs[1:]), 
-                        ("blockvis", bvis),
+                        ("rhsu", discr.convert_volume(my_rhs[0], kind="numpy")),
+                        ("rhsv", discr.convert_volume(my_rhs[1:], kind="numpy")), 
                     ],
                     expressions=[
                         ("rhsdiff_u", "rhs_u-trhs_u"),
