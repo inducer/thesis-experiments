@@ -118,8 +118,11 @@ def main():
 
         cpu_discr = discr
     else:
+        from pycuda.driver import device_attribute
         discr = rcon.make_discretization(mesh_data, order=options.order, debug=debug_flags,
-                tune_for=op.op_template())
+                tune_for=op.op_template(),
+                mpi_cuda_dev_filter=lambda dev: 
+                dev.get_attribute(device_attribute.MULTIPROCESSOR_COUNT) > 2)
 
         cpu_discr = cpu_rcon.make_discretization(mesh_data, order=options.order)
 
@@ -186,7 +189,6 @@ def main():
     def timestep_loop():
         for step in range(nsteps):
             logmgr.tick()
-            from pycuda.driver import mem_get_info
 
             if options.vis_interval and step % options.vis_interval == 0:
                 e, h = op.split_eh(boxed_fields[0])

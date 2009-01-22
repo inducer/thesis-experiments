@@ -159,8 +159,6 @@ def main() :
                     [
                         ("u", discr.convert_volume(fields[0], kind="numpy")),
                         ("v", discr.convert_volume(fields[1:], kind="numpy")), 
-                        ("rhsu", discr.convert_volume(my_rhs[0], kind="numpy")),
-                        ("rhsv", discr.convert_volume(my_rhs[1:], kind="numpy")), 
                     ],
                     expressions=[
                         ("rhsdiff_u", "rhs_u-trhs_u"),
