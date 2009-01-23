@@ -64,6 +64,7 @@ def main():
     parser.add_option("--h", default=0.08, type="float")
     parser.add_option("--final-time", default=4e-10, type="float")
     parser.add_option("--vis-interval", default=0, type="int")
+    parser.add_option("--profile", action="store_true")
     parser.add_option("--steps", type="int")
     parser.add_option("--cpu", action="store_true")
     parser.add_option("-d", "--debug-flags", metavar="DEBUG_FLAG,DEBUG_FLAG")
@@ -203,17 +204,23 @@ def main():
             boxed_fields[0] = stepper(boxed_fields[0], boxed_t[0], dt, rhs)
             boxed_t[0] += dt
 
-    if False:
+    if options.profile:
         from cProfile import Profile
         from lsprofcalltree import KCacheGrind
         prof = Profile()
+
+        rhs(0, boxed_fields[0]) # keep init traffic out of profile
+
         try:
             prof.runcall(timestep_loop)
             fields = boxed_fields[0]
         finally:
             kg = KCacheGrind(prof)
             import sys
-            kg.output(file(sys.argv[0]+".log", 'w'))
+            from hedge.tools import get_rank
+            kg.output(open(
+                "profile-%s-rank-%d.log" % (sys.argv[0], get_rank(discr)),
+                "w"))
     else:
         timestep_loop()
         fields = boxed_fields[0]
