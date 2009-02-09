@@ -6,7 +6,7 @@ import pycuda.tools
 
 
 
-def make_bboxes(dimensions, dtype, mesh, blocks):
+def make_bboxes(dimensions, dtype, mesh, blocks, pad):
     bboxes = numpy.empty((len(blocks), dimensions, 2), dtype=dtype)
 
     from pytools import flatten
@@ -16,10 +16,13 @@ def make_bboxes(dimensions, dtype, mesh, blocks):
             for el_nr in block
             for vi in mesh.elements[el_nr].vertex_indices])
 
-        bboxes[block_nr,:,0] = numpy.minimum.reduce(vertices)
-        bboxes[block_nr,:,1] = numpy.maximum.reduce(vertices)
+        bboxes[block_nr,:,0] = numpy.minimum.reduce(vertices) - pad
+        bboxes[block_nr,:,1] = numpy.maximum.reduce(vertices) + pad
+        print max(bboxes[block_nr,:,1]-bboxes[block_nr,:,0]), len(block)
 
-        return bboxes
+    raw_input()
+
+    return bboxes
 
 
 
@@ -50,6 +53,10 @@ def time_sift(pib):
     node_count = len(pib.discr.nodes)
     particle_count = len(pib.x_particle)
 
+    charge = 1
+    radius = 0.000556605732511
+    #radius = 50*MM
+
     # partitioning ------------------------------------------------------------
     el_group, = pib.discr.element_groups
     ldis = el_group.local_discretization
@@ -61,7 +68,7 @@ def time_sift(pib):
             pib.mesh.element_adjacency_graph(), elements_per_block)
 
     # data generation ---------------------------------------------------------
-    bboxes = make_bboxes(pib.xdim, dtype, pib.discr.mesh, blocks)
+    bboxes = make_bboxes(pib.xdim, dtype, pib.discr.mesh, blocks, radius)
     block_starts, block_nodes = make_gpu_blocks(blocks, pib.discr)
 
     # To-GPU copy -------------------------------------------------------------
@@ -143,8 +150,8 @@ def time_sift(pib):
 
     // main kernel ------------------------------------------------------------
 
-    __shared__ unsigned todo_particle_count;
-    __shared__ unsigned todo_particles[PARTICLE_LIST_SIZE];
+    __shared__ unsigned intersecting_particle_count;
+    __shared__ unsigned intersecting_particles[PARTICLE_LIST_SIZE];
     __shared__ float bbox_min[XDIM];
     __shared__ float bbox_max[XDIM];
     __shared__ unsigned out_of_particles_thread_count;
@@ -158,30 +165,31 @@ def time_sift(pib):
       if (threadIdx.x == 0)
       {
         // setup --------------------------------------------------------------
-        out_of_particles_thread_count = 0;
-
         for (unsigned i = 0; i < XDIM; ++i)
         {
           bbox_min[i] = tex1Dfetch(tex_bboxes, (BLOCK_NUM*XDIM + i) * 2);
           bbox_max[i] = tex1Dfetch(tex_bboxes, (BLOCK_NUM*XDIM + i) * 2 + 1);
         }
+
+        out_of_particles_thread_count = 0;
+        intersecting_particle_count = 0;
       }
       __syncthreads();
       
       velocity_vec my_j;
 
       unsigned n_particle = threadIdx.x;
-      while (n_particle < particle_count)
+      //while (n_particle < particle_count)
+      for (unsigned blah = 0; blah < 30; ++blah)
       {
         // sift ---------------------------------------------------------------
-        todo_particle_count = 0;
         
         while (true)
         {
           if (n_particle < particle_count)
           {
             //#pragma unroll
-            //for (unsigned repeats = 0; repeats < 4; ++repeats)
+            //for (unsigned repeats = 0; repeats < 2; ++repeats)
             {
               float3 x_particle = shorten<pos_vec>::call(
                 tex1Dfetch(tex_x_particle, n_particle)); 
@@ -194,12 +202,12 @@ def time_sift(pib):
                 + signbit(x_particle.z - bbox_min[2])
                 + signbit(bbox_max[2] - x_particle.z)
                 ;
-              if (out_of_bbox_indicator)
+              if (!out_of_bbox_indicator)
               {
-                unsigned idx_in_list = atomicAdd(&todo_particle_count, 1)-1;
+                unsigned idx_in_list = atomicAdd(&intersecting_particle_count, 1);
                 if (idx_in_list < PARTICLE_LIST_SIZE)
                 {
-                  todo_particles[idx_in_list] = n_particle;
+                  intersecting_particles[idx_in_list] = n_particle;
                   n_particle += THREADS_PER_BLOCK;
                 }
               }
@@ -211,9 +219,9 @@ def time_sift(pib):
           {
             // every thread should only contribute to out_of_particles_thread_count once.
 
-            if (n_particle != unsigned(-1))
+            if (n_particle != UINT_MAX)
               atomicAdd(&out_of_particles_thread_count, 1);
-            n_particle = unsigned(-1);
+            n_particle = UINT_MAX;
           }
 
           // loop end conditions
@@ -222,23 +230,29 @@ def time_sift(pib):
           if (out_of_particles_thread_count == THREADS_PER_BLOCK)
             break;
 
-          if (todo_particle_count >= PARTICLE_LIST_SIZE)
+          if (intersecting_particle_count >= PARTICLE_LIST_SIZE)
             break;
-
           __syncthreads();
         }
 
-        // add up todo_particles ----------------------------------------------
+        // add up intersecting_particles --------------------------------------
         pos_vec x_node = shorten<pos_vec>::call(
           tex1Dfetch(tex_x_node, NODE_ID));
 
         if (threadIdx.x < VALID_THREADS)
         {
+          unsigned block_particle_count = min(
+            intersecting_particle_count,
+            PARTICLE_LIST_SIZE);
+
+          if (threadIdx.x == 0)
+            debugbuf[blockIdx.x] += intersecting_particle_count;
+
           for (unsigned block_particle_nr = 0;
-               block_particle_nr < todo_particle_count;
+               block_particle_nr < block_particle_count;
                ++block_particle_nr)
           {
-            unsigned particle_nr = todo_particles[block_particle_nr];
+            unsigned particle_nr = intersecting_particles[block_particle_nr];
             pos_vec x_particle = shorten<pos_vec>::call(
               tex1Dfetch(tex_x_particle, particle_nr));
             pos_vec x_rel = make_float3(
@@ -264,6 +278,10 @@ def time_sift(pib):
             }
           }
         }
+
+        __syncthreads();
+        intersecting_particle_count = 0;
+        __syncthreads();
       }
 
       unsigned node_id = NODE_ID;
@@ -298,7 +316,12 @@ def time_sift(pib):
     tex_block_nodes.set_flags(cuda.TRSF_READ_AS_INTEGER)
     block_nodes_gpu.bind_to_texref(tex_block_nodes)
 
-    debugbuf = gpuarray.zeros((threads_per_block,), dtype=numpy.float32)
+    from hedge.backends.cuda.tools import int_ceiling
+    block_count = int_ceiling(node_count/threads_per_block)
+    print block_count
+
+    assert block_count < 1024
+    debugbuf = gpuarray.zeros((1024,), dtype=numpy.float32)
 
     func = smod.get_function("sift").prepare(
             "PPffffII",
@@ -312,19 +335,13 @@ def time_sift(pib):
 
     j_gpu = gpuarray.zeros((node_count, vdim_channels), dtype=dtype)
 
-    from hedge.backends.cuda.tools import int_ceiling
-
-    charge = 1
-    radius = 0.000556605732511
-    #radius = 50*MM
-
     from pyrticle.tools import PolynomialShapeFunction
     sf = PolynomialShapeFunction(radius, pib.xdim)
 
     print "LAUNCHING"
     start.record()
     func.prepared_call(
-            (int_ceiling(node_count/threads_per_block), 1),
+            (block_count, 1),
             debugbuf.gpudata,
             j_gpu.gpudata,
             charge, radius, radius**2, sf.normalizer,
@@ -332,7 +349,10 @@ def time_sift(pib):
     stop.record()
     stop.synchronize()
 
-    #print debugbuf
+    numpy.set_printoptions(linewidth=200, threshold=2048)
+    debugbuf = debugbuf.get()
+    debugbuf[debugbuf > particle_count * 2] = -1
+    print debugbuf
 
     from hedge.tools import to_obj_array
     j = to_obj_array(j_gpu.get().T)[:3]
