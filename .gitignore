@@ -38,3 +38,4 @@ flux_lift.cu
 *.conf
 *.pdf
 tmp
+hostfile
