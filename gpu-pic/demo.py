@@ -28,7 +28,7 @@ def make_pib(particle_count):
     v_particle = numpy.zeros((particle_count, vdim))
     v_particle[:,0] = 1
 
-    from hedge.discr_precompiled import Discretization
+    from hedge.backends.jit import Discretization
     discr = Discretization(mesh, order=4)
 
     return ParticleInfoBlock(

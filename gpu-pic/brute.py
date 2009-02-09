@@ -157,7 +157,7 @@ def time_brute(pib):
 
     j_gpu = gpuarray.zeros((node_count, vdim_channels), dtype=dtype)
 
-    from hedge.cuda.tools import int_ceiling
+    from hedge.backends.cuda.tools import int_ceiling
 
     charge = 1
     radius = 0.000556605732511

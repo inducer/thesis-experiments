@@ -56,8 +56,8 @@ def time_sift(pib):
 
     elements_per_block = threads_per_block // ldis.node_count()
 
-    from hedge.cuda.discretization import make_gpu_partition
-    partition, blocks = make_gpu_partition(
+    from hedge.backends.cuda import make_gpu_partition_greedy
+    partition, blocks = make_gpu_partition_greedy(
             pib.mesh.element_adjacency_graph(), elements_per_block)
 
     # data generation ---------------------------------------------------------
@@ -312,7 +312,7 @@ def time_sift(pib):
 
     j_gpu = gpuarray.zeros((node_count, vdim_channels), dtype=dtype)
 
-    from hedge.cuda.tools import int_ceiling
+    from hedge.backends.cuda.tools import int_ceiling
 
     charge = 1
     radius = 0.000556605732511
@@ -321,6 +321,7 @@ def time_sift(pib):
     from pyrticle.tools import PolynomialShapeFunction
     sf = PolynomialShapeFunction(radius, pib.xdim)
 
+    print "LAUNCHING"
     start.record()
     func.prepared_call(
             (int_ceiling(node_count/threads_per_block), 1),
