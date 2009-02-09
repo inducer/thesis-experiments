@@ -25,6 +25,10 @@ import numpy.linalg as la
 
 
 def main():
+    #import os, mpiboost
+    #os.environ["CUDA_PROFILE"] = "1"
+    #os.environ["CUDA_PROFILE_LOG"] = "cuda_profile_%d.log" % mpiboost.rank
+
     from hedge.element import TetrahedralElement
     from hedge.mesh import make_ball_mesh, make_cylinder_mesh, make_box_mesh
     from hedge.visualization import \
@@ -37,7 +41,6 @@ def main():
     import sys
     sys.path.append("../../../hedge/examples/maxwell")
     from analytic_solutions import \
-            check_time_harmonic_solution, \
             RealPartAdapter, \
             SplitComplexAdapter, \
             RectangularWaveguideMode, \
@@ -90,11 +93,14 @@ def main():
                 #return_meshpy_mesh=True
         #meshpy_mesh.write_neu(open("box.neu", "w"), 
                 #bc={frozenset(range(1,7)): ("PEC", 1)})
+        print "%d elements in entire mesh" % len(mesh.elements)
 
     if rcon.is_head_rank:
         mesh_data = rcon.distribute_mesh(mesh)
     else:
         mesh_data = rcon.receive_mesh()
+    if hasattr(mesh_data, "mesh"):
+        print "%d elements on rank %d" % (len(mesh_data.mesh.elements), rcon.rank)
 
     from hedge.pde import MaxwellOperator
     op = MaxwellOperator(epsilon, mu, flux_type=1)
@@ -123,7 +129,8 @@ def main():
         discr = rcon.make_discretization(mesh_data, order=options.order, debug=debug_flags,
                 tune_for=op.op_template(),
                 mpi_cuda_dev_filter=lambda dev: 
-                dev.get_attribute(device_attribute.MULTIPROCESSOR_COUNT) > 2)
+                dev.get_attribute(device_attribute.MULTIPROCESSOR_COUNT) > 2
+                )
 
         cpu_discr = cpu_rcon.make_discretization(mesh_data, order=options.order)
 
@@ -144,9 +151,6 @@ def main():
 
     boxed_t = [0]
 
-    #check_time_harmonic_solution(discr, mode, c_sol)
-    #continue
-    
     # diagnostics setup ---------------------------------------------------
     from pytools.log import LogManager, add_general_quantities, \
             add_simulation_quantities, add_run_info
