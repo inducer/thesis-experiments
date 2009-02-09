@@ -1,4 +1,5 @@
 import numpy
+import numpy.linalg as la
 import pycuda.driver as cuda
 import pycuda.gpuarray as gpuarray
 import pycuda.tools
@@ -9,6 +10,7 @@ import pycuda.tools
 def make_bboxes(dimensions, dtype, mesh, blocks, pad):
     bboxes = numpy.empty((len(blocks), dimensions, 2), dtype=dtype)
 
+    diagonals =  []
     from pytools import flatten
     for block_nr, block in enumerate(blocks):
         vertices = numpy.array([
@@ -18,9 +20,15 @@ def make_bboxes(dimensions, dtype, mesh, blocks, pad):
 
         bboxes[block_nr,:,0] = numpy.minimum.reduce(vertices) - pad
         bboxes[block_nr,:,1] = numpy.maximum.reduce(vertices) + pad
-        print max(bboxes[block_nr,:,1]-bboxes[block_nr,:,0]), len(block)
+        diagonals.append(la.norm(bboxes[block_nr,:,1]-bboxes[block_nr,:,0]))
 
-    raw_input()
+    mesh_min, mesh_max = mesh.bounding_box()
+    from pytools import average
+    print "block diagonals: max=%g, min=%g, avg=%g, total=%g" % (
+            max(diagonals),
+            average(diagonals),
+            min(diagonals),
+            la.norm(mesh_max-mesh_min))
 
     return bboxes
 
@@ -63,11 +71,12 @@ def time_sift(pib):
 
     elements_per_block = threads_per_block // ldis.node_count()
 
-    from hedge.backends.cuda import make_gpu_partition_greedy
-    partition, blocks = make_gpu_partition_greedy(
+    from hedge.backends.cuda import make_gpu_partition_metis
+    partition, blocks = make_gpu_partition_metis(
             pib.mesh.element_adjacency_graph(), elements_per_block)
 
     # data generation ---------------------------------------------------------
+    print blocks
     bboxes = make_bboxes(pib.xdim, dtype, pib.discr.mesh, blocks, radius)
     block_starts, block_nodes = make_gpu_blocks(blocks, pib.discr)
 
@@ -100,7 +109,8 @@ def time_sift(pib):
     ctx.update(locals())
     ctx.update(pib.__dict__)
 
-    smod = cuda.SourceModule("""
+    from jinja2 import Template
+    source_tpl = Template("""
     // shortening and lengthening ---------------------------------------------
     template <class T>
     class shorten { };
@@ -127,17 +137,17 @@ def time_sift(pib):
     // defines ----------------------------------------------------------------
 
     #define PARTICLE_LIST_SIZE 1000
-    #define THREADS_PER_BLOCK %(threads_per_block)d
+    #define THREADS_PER_BLOCK {{ threads_per_block }}
     #define BLOCK_NUM (blockIdx.x)
-    #define XDIM %(xdim)d
-    #define VALID_THREADS %(valid_threads)d
+    #define XDIM {{ xdim }}
+    #define VALID_THREADS {{ valid_threads }}
     #define BLOCK_START tex1Dfetch(tex_block_starts, BLOCK_NUM)
     #define NODE_ID tex1Dfetch(tex_block_nodes, BLOCK_START+threadIdx.x)
 
-    typedef float%(xdim_channels)d pos_align_vec;
-    typedef float%(vdim_channels)d velocity_align_vec;
-    typedef float%(xdim)d pos_vec;
-    typedef float%(vdim)d velocity_vec;
+    typedef float{{ xdim_channels }} pos_align_vec;
+    typedef float{{ vdim_channels }} velocity_align_vec;
+    typedef float{{ xdim }} pos_vec;
+    typedef float{{ vdim }} velocity_vec;
 
     // textures ---------------------------------------------------------------
 
@@ -184,36 +194,33 @@ def time_sift(pib):
       {
         // sift ---------------------------------------------------------------
         
+        /*
         while (true)
         {
           if (n_particle < particle_count)
           {
-            //#pragma unroll
-            //for (unsigned repeats = 0; repeats < 2; ++repeats)
-            {
-              float3 x_particle = shorten<pos_vec>::call(
-                tex1Dfetch(tex_x_particle, n_particle)); 
+            float3 x_particle = shorten<pos_vec>::call(
+              tex1Dfetch(tex_x_particle, n_particle)); 
 
-              int out_of_bbox_indicator =
-                  signbit(x_particle.x - bbox_min[0])
-                + signbit(bbox_max[0] - x_particle.x)
-                + signbit(x_particle.y - bbox_min[1])
-                + signbit(bbox_max[1] - x_particle.y)
-                + signbit(x_particle.z - bbox_min[2])
-                + signbit(bbox_max[2] - x_particle.z)
-                ;
-              if (!out_of_bbox_indicator)
+            int out_of_bbox_indicator =
+                signbit(x_particle.x - bbox_min[0])
+              + signbit(bbox_max[0] - x_particle.x)
+              + signbit(x_particle.y - bbox_min[1])
+              + signbit(bbox_max[1] - x_particle.y)
+              + signbit(x_particle.z - bbox_min[2])
+              + signbit(bbox_max[2] - x_particle.z)
+              ;
+            if (!out_of_bbox_indicator)
+            {
+              unsigned idx_in_list = atomicAdd(&intersecting_particle_count, 1);
+              if (idx_in_list < PARTICLE_LIST_SIZE)
               {
-                unsigned idx_in_list = atomicAdd(&intersecting_particle_count, 1);
-                if (idx_in_list < PARTICLE_LIST_SIZE)
-                {
-                  intersecting_particles[idx_in_list] = n_particle;
-                  n_particle += THREADS_PER_BLOCK;
-                }
-              }
-              else
+                intersecting_particles[idx_in_list] = n_particle;
                 n_particle += THREADS_PER_BLOCK;
+              }
             }
+            else
+              n_particle += THREADS_PER_BLOCK;
           }
           else
           {
@@ -234,6 +241,7 @@ def time_sift(pib):
             break;
           __syncthreads();
         }
+        */
 
         // add up intersecting_particles --------------------------------------
         pos_vec x_node = shorten<pos_vec>::call(
@@ -288,7 +296,11 @@ def time_sift(pib):
       if (node_id < node_count)
         j[node_id] = lengthen<velocity_align_vec>::call(my_j);
     }
-    \n""" % ctx, no_extern_c=True, keep=True)
+    \n""", line_statement_prefix="##")
+
+    smod = cuda.SourceModule(
+            source_tpl.render(**ctx), 
+            no_extern_c=True, keep=True)
 
     # GPU invocation ----------------------------------------------------------
 
@@ -305,7 +317,6 @@ def time_sift(pib):
     v_particle_gpu.bind_to_texref(tex_v_particle)
 
     tex_bboxes = smod.get_texref("tex_bboxes")
-    tex_bboxes.set_flags(cuda.TRSF_READ_AS_INTEGER)
     bboxes_gpu.bind_to_texref(tex_bboxes)
 
     tex_block_starts = smod.get_texref("tex_block_starts")

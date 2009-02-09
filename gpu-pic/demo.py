@@ -46,7 +46,9 @@ def main():
     from brute import time_brute
     from sift import time_sift
     for test_nr, particle_count in enumerate(pcounts):
+        print "Making PIB"
         pib = make_pib(particle_count)
+        print "done"
 
         vis_data = []
 
