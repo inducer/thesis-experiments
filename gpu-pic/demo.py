@@ -6,15 +6,19 @@ class ParticleInfoBlock(Record):
     pass
 
 def make_pib(particle_count):
-    from pyrticle.geometry import make_cylinder_with_fine_core
 
     MM = 1e-3
-    mesh = make_cylinder_with_fine_core(
-        r=25*MM, inner_r=2.5*MM,
-        min_z=-50*MM, max_z=50*MM,
-        max_volume_inner=10*MM**3,
-        max_volume_outer=100*MM**3,
-        radial_subdiv=10)
+    if False:
+        from pyrticle.geometry import make_cylinder_with_fine_core
+        mesh = make_cylinder_with_fine_core(
+            r=25*MM, inner_r=2.5*MM,
+            min_z=-50*MM, max_z=50*MM,
+            max_volume_inner=10*MM**3,
+            max_volume_outer=100*MM**3,
+            radial_subdiv=10)
+    else:
+        from hedge.mesh import make_cylinder_mesh
+        mesh = make_cylinder_mesh(radius=25*MM, height=50*MM)
 
     xdim = 3
     vdim = 3

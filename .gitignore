@@ -39,3 +39,4 @@ flux_lift.cu
 *.pdf
 tmp
 hostfile
+*.linkinfo
