@@ -404,7 +404,7 @@ def time_sift(pib):
     j_gpu = gpuarray.zeros((node_count, pib.vdim), dtype=dtype)
 
     from pyrticle.tools import PolynomialShapeFunction
-    sf = PolynomialShapeFunction(radius, pib.xdim)
+    sf = PolynomialShapeFunction(pib.radius, pib.xdim)
 
     print "LAUNCHING"
     start.record()
@@ -412,7 +412,7 @@ def time_sift(pib):
             (block_count, 1),
             debugbuf.gpudata,
             j_gpu.gpudata,
-            charge, radius, radius**2, sf.normalizer,
+            pib.charge, pib.radius, pib.radius**2, sf.normalizer,
             node_count, particle_count,
             cuda.mem_alloc(block_count*4), # out_of_particles_thread_count
             cuda.mem_alloc(block_count*4), # intersecting_particle_count

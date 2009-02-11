@@ -42,6 +42,9 @@ def make_pib(particle_count):
         vdim=vdim,
         x_particle=x_particle,
         v_particle=v_particle,
+        charge=1,
+        #radius=0.000556605732511,
+        radius=50*MM,
         )
 
 def main():

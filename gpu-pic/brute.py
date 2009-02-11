@@ -159,19 +159,15 @@ def time_brute(pib):
 
     from hedge.backends.cuda.tools import int_ceiling
 
-    charge = 1
-    radius = 0.000556605732511
-    #radius = 50*MM
-
     from pyrticle.tools import PolynomialShapeFunction
-    sf = PolynomialShapeFunction(radius, pib.xdim)
+    sf = PolynomialShapeFunction(pib.radius, pib.xdim)
 
     start.record()
     func.prepared_call(
             (int_ceiling(node_count/threads_per_block), 1),
             debugbuf.gpudata,
             j_gpu.gpudata,
-            charge, radius, radius**2, sf.normalizer,
+            pib.charge, pib.radius, pib.radius**2, sf.normalizer,
             node_count, particle_count)
     stop.record()
     stop.synchronize()
