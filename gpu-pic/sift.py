@@ -217,21 +217,11 @@ def time_sift(pib):
     __shared__ float bbox_max[XDIM];
     __shared__ unsigned out_of_particles_thread_count;
 
-    // #define RESET_ATOMIC(NAME) NAME[blockIdx.x] = 0
-    // #define MY_ATOMIC_ADD(NAME, VALUE) atomicAdd(NAME+blockIdx.x, VALUE)
-    // #define READ_ATOMIC(NAME) (NAME[blockIdx.x])
-
-    #define RESET_ATOMIC(NAME) NAME = 0
-    #define MY_ATOMIC_ADD(NAME, VALUE) atomicAdd(&NAME, VALUE)
-    #define READ_ATOMIC(NAME) NAME
-
     extern "C" __global__ void sift(
       float *debugbuf,
       velocity_vec *j, 
       float particle, float radius, float radius_squared, float normalizer, 
       unsigned node_count, unsigned particle_count
-      //unsigned *out_of_particles_thread_count,
-      //unsigned *intersecting_particle_count
       )
     {
       if (threadIdx.x == 0)
@@ -243,8 +233,8 @@ def time_sift(pib):
           bbox_max[i] = tex1Dfetch(tex_bboxes, (BLOCK_NUM*XDIM + i) * 2 + 1);
         }
 
-        RESET_ATOMIC(out_of_particles_thread_count);
-        RESET_ATOMIC(intersecting_particle_count);
+        out_of_particles_thread_count = 0;
+        intersecting_particle_count = 0;
       }
       __syncthreads();
       
@@ -253,20 +243,13 @@ def time_sift(pib):
       my_j.y = 0;
       my_j.z = 0;
 
-      int hit_end = 0;
       unsigned n_particle = threadIdx.x;
-      for (unsigned blah = 0; blah < 30; ++blah)
-      // while (true)
+      while (true)
       {
         // sift ---------------------------------------------------------------
         
-        int last_thing;
-        unsigned blubb;
-        for (blubb = 0; blubb < 130; ++blubb)
-        // while (true)
+        while (true)
         {
-          last_thing = 0;
-
           if (n_particle < particle_count)
           {
             float3 x_particle = shorten<pos_vec>::call(
@@ -282,52 +265,34 @@ def time_sift(pib):
               ;
             if (!out_of_bbox_indicator)
             {
-              unsigned idx_in_list = MY_ATOMIC_ADD(intersecting_particle_count, 1);
+              unsigned idx_in_list = atomicAdd(&intersecting_particle_count, 1);
               if (idx_in_list < PARTICLE_LIST_SIZE)
               {
                 intersecting_particles[idx_in_list] = n_particle;
                 n_particle += THREADS_PER_BLOCK;
-                last_thing = 1;
               }
-              else
-                last_thing = 2;
             }
             else
-            {
               n_particle += THREADS_PER_BLOCK;
-              last_thing = 3;
-            }
           }
           else
           {
             // every thread should only contribute to out_of_particles_thread_count once.
 
             if (n_particle != UINT_MAX)
-            {
-              hit_end = 5;
-              MY_ATOMIC_ADD(out_of_particles_thread_count, 1);
-            }
+              atomicAdd(&out_of_particles_thread_count, 1);
             n_particle = UINT_MAX;
           }
 
           // loop end conditions
 
           __syncthreads();
-          if (READ_ATOMIC(out_of_particles_thread_count) == THREADS_PER_BLOCK)
+          if (out_of_particles_thread_count == THREADS_PER_BLOCK)
             break;
 
-          if (READ_ATOMIC(intersecting_particle_count) >= PARTICLE_LIST_SIZE)
+          if (intersecting_particle_count >= PARTICLE_LIST_SIZE)
             break;
           __syncthreads();
-        }
-        __syncthreads();
-        if (blockIdx.x == 0)
-        {
-          debugbuf[threadIdx.x*5] = threadIdx.x;
-          debugbuf[threadIdx.x*5+1] = hit_end+100;
-          debugbuf[threadIdx.x*5+2] = blah;
-          debugbuf[threadIdx.x*5+3] = n_particle;
-          debugbuf[threadIdx.x*5+4] = READ_ATOMIC(out_of_particles_thread_count);
         }
 
         // add up intersecting_particles --------------------------------------
@@ -337,13 +302,11 @@ def time_sift(pib):
               tex1Dfetch(tex_block_nodes, BLOCK_START+threadIdx.x));
 
           unsigned block_particle_count = min(
-            READ_ATOMIC(intersecting_particle_count),
+            intersecting_particle_count,
             PARTICLE_LIST_SIZE);
 
-          /*
           if (threadIdx.x == 0)
-            debugbuf[blockIdx.x] += READ_ATOMIC(intersecting_particle_count);
-            */
+            debugbuf[blockIdx.x*5+1] += intersecting_particle_count;
 
           for (unsigned block_particle_nr = 0;
                block_particle_nr < block_particle_count;
@@ -376,11 +339,11 @@ def time_sift(pib):
           }
         }
 
-        if (READ_ATOMIC(out_of_particles_thread_count) == THREADS_PER_BLOCK)
+        if (out_of_particles_thread_count == THREADS_PER_BLOCK)
           break;
 
         __syncthreads();
-        RESET_ATOMIC(intersecting_particle_count);
+        intersecting_particle_count = 0;
         __syncthreads();
       }
 
@@ -425,7 +388,7 @@ def time_sift(pib):
     from hedge.backends.cuda.tools import int_ceiling
     block_count = len(block_info_records)
 
-    debugbuf = gpuarray.zeros((20000,), dtype=numpy.float32)
+    debugbuf = gpuarray.zeros((block_count*5,), dtype=numpy.float32)
 
     func = smod.get_function("sift").prepare(
             "PPffffIIPP",
@@ -457,10 +420,11 @@ def time_sift(pib):
     stop.record()
     stop.synchronize()
 
-    numpy.set_printoptions(linewidth=150, threshold=2**15, suppress=True)
-    debugbuf = debugbuf.get()
-    debugbuf[debugbuf > particle_count * 2] = -1
-    print debugbuf[:5*threads_per_block].reshape((threads_per_block,5))
+    if False:
+        numpy.set_printoptions(linewidth=150, threshold=2**15, suppress=True)
+        debugbuf = debugbuf.get()
+        debugbuf[debugbuf > particle_count * 2] = -1
+        print debugbuf[:5*block_count].reshape((block_count,5))
 
     from hedge.tools import to_obj_array
     j = to_obj_array(j_gpu.get().T)[:3]

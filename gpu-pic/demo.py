@@ -8,7 +8,7 @@ class ParticleInfoBlock(Record):
 def make_pib(particle_count):
 
     MM = 1e-3
-    if False:
+    if True:
         from pyrticle.geometry import make_cylinder_with_fine_core
         mesh = make_cylinder_with_fine_core(
             r=25*MM, inner_r=2.5*MM,
@@ -57,7 +57,7 @@ def main():
         vis_data = []
 
         for alg, func in [
-            #("brute", time_brute),
+            ("brute", time_brute),
             ("sift", time_sift),
             ]:
             rate, j = func(pib)
