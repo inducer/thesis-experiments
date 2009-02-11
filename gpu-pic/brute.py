@@ -86,8 +86,10 @@ def time_brute(pib):
       pos_vec x_node = shorten<pos_vec>::call(tex1Dfetch(tex_x_node, node_id));
 
       velocity_vec my_j;
+      my_j.x = 0;
+      my_j.y = 0;
+      my_j.z = 0;
 
-      #pragma unroll 5
       for (unsigned n_particle_base = 0; n_particle_base < particle_count; n_particle_base += THREADS_PER_BLOCK)
       {
         __syncthreads();
