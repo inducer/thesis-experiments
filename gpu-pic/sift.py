@@ -250,6 +250,7 @@ def time_sift(pib):
         
         while (true)
         {
+          ## for i in range(1)
           if (n_particle < particle_count)
           {
             float3 x_particle = shorten<pos_vec>::call(
@@ -283,6 +284,7 @@ def time_sift(pib):
               atomicAdd(&out_of_particles_thread_count, 1);
             n_particle = UINT_MAX;
           }
+          ## endfor
 
           // loop end conditions
 
