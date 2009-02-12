@@ -14,7 +14,7 @@ class BlockInfo(Record):
 
 
 
-def make_blocks(discr, nodes_per_block, pad):
+def make_blocks(discr, nodes_per_block):
     from hedge.discretization import ones_on_volume
     mesh_volume = discr.integral(ones_on_volume(discr))
     dx =  (mesh_volume / len(discr))**(1/discr.dimensions) * 4
@@ -26,9 +26,6 @@ def make_blocks(discr, nodes_per_block, pad):
     bbox_max += 1e-10
     bbox_size = bbox_max-bbox_min
     dims = numpy.asarray(bbox_size/dx, dtype=numpy.int32)
-
-    print bbox_min
-    print bbox_max
 
     from pyrticle._internal import Brick, BoxFloat
     brick = Brick(number=0,
@@ -69,18 +66,16 @@ def make_blocks(discr, nodes_per_block, pad):
         assert brick.index(split_idx) == grid_idx
         node_start = 0
 
-        grid_bbox = brick.cell(split_idx).enlarged(pad)
+        grid_bbox = brick.cell(split_idx)
         assert brick.point(split_idx) in grid_bbox
 
         for node in discr.nodes[node_indices]:
             assert node in grid_bbox
 
-        enlarged_grid_bbox = grid_bbox.enlarged(pad)
-
         while node_start < len(node_indices):
             yield BlockInfo(
-                    bbox_min=enlarged_grid_bbox.lower,
-                    bbox_max=enlarged_grid_bbox.upper,
+                    bbox_min=grid_bbox.lower,
+                    bbox_max=grid_bbox.upper,
                     node_indices=node_indices[node_start:node_start+nodes_per_block]
                     )
             node_start += nodes_per_block
@@ -138,8 +133,7 @@ def time_sift(pib):
     max_nodes_per_block = threads_per_block
 
     # data generation ---------------------------------------------------------
-    block_info_records = list(make_blocks(
-        pib.discr,  max_nodes_per_block, pib.radius))
+    block_info_records = list(make_blocks(pib.discr,  max_nodes_per_block))
 
     bboxes = make_bboxes(block_info_records, pib.discr.dimensions, dtype)
     block_starts, block_nodes, block_node_indices = \
@@ -243,12 +237,21 @@ def time_sift(pib):
         // setup --------------------------------------------------------------
         for (unsigned i = 0; i < XDIM; ++i)
         {
-          bbox_min[i] = tex1Dfetch(tex_bboxes, (BLOCK_NUM*XDIM + i) * 2);
-          bbox_max[i] = tex1Dfetch(tex_bboxes, (BLOCK_NUM*XDIM + i) * 2 + 1);
+          bbox_min[i] = tex1Dfetch(tex_bboxes, (BLOCK_NUM*XDIM + i) * 2) - box_pad;
+          bbox_max[i] = tex1Dfetch(tex_bboxes, (BLOCK_NUM*XDIM + i) * 2 + 1) + box_pad;
         }
 
         out_of_particles_thread_count = 0;
         intersecting_particle_count = 0;
+        if (blockIdx.x == 0)
+        {
+            for (unsigned i = 0; i < XDIM; ++i)
+            {
+              debugbuf[i] = bbox_min[i];
+              debugbuf[3+i] = bbox_max[i];
+              debugbuf[100+i] = box_pad;
+            }
+        }
       }
       __syncthreads();
       
@@ -271,12 +274,12 @@ def time_sift(pib):
               tex1Dfetch(tex_x_particle, n_particle)); 
 
             int out_of_bbox_indicator =
-                signbit(x_particle.x - bbox_min[0] - box_pad)
-              + signbit(bbox_max[0] + box_pad - x_particle.x)
-              + signbit(x_particle.y - bbox_min[1] - box_pad)
-              + signbit(bbox_max[1] + box_pad - x_particle.y)
-              + signbit(x_particle.z - bbox_min[2] - box_pad)
-              + signbit(bbox_max[2] + box_pad - x_particle.z)
+                signbit(x_particle.x - bbox_min[0])
+              + signbit(bbox_max[0] - x_particle.x)
+              + signbit(x_particle.y - bbox_min[1])
+              + signbit(bbox_max[1] - x_particle.y)
+              + signbit(x_particle.z - bbox_min[2])
+              + signbit(bbox_max[2] - x_particle.z)
               ;
             if (!out_of_bbox_indicator)
             {
@@ -413,24 +416,22 @@ def time_sift(pib):
     stop = cuda.Event()
 
     j_gpu = gpuarray.zeros((node_count, pib.vdim), dtype=dtype)
-    print j_gpu.shape
 
     from pyrticle.tools import PolynomialShapeFunction
     sf = PolynomialShapeFunction(pib.radius, pib.xdim)
 
-    print "LAUNCHING"
     start.record()
     func.prepared_call(
             (block_count, 1),
             debugbuf.gpudata,
             j_gpu.gpudata,
             pib.charge, pib.radius, pib.radius**2, sf.normalizer, 
-            0, #pad
+            pib.radius,
             node_count, particle_count)
     stop.record()
     stop.synchronize()
 
-    if True:
+    if False:
         numpy.set_printoptions(linewidth=150, threshold=2**15, suppress=True)
         debugbuf = debugbuf.get()
         #print debugbuf[:5*block_count].reshape((block_count,5))
