@@ -8,7 +8,7 @@ class ParticleInfoBlock(Record):
 
 def make_pib(particle_count):
     MM = 1e-3
-    if False:
+    if True:
         from pyrticle.geometry import make_cylinder_with_fine_core
         mesh = make_cylinder_with_fine_core(
             r=25*MM, inner_r=2.5*MM,
@@ -30,8 +30,8 @@ def make_pib(particle_count):
     center = (mesh_min+mesh_max)*0.5
 
     x_particle = 0.03*numpy.random.randn(particle_count, xdim)
-    x_particle[:,0] *= 0.01
-    x_particle[:,1] *= 0.01
+    x_particle[:,0] *= 0.1
+    x_particle[:,1] *= 0.1
 
     for i in range(xdim):
         x_particle[:,i] += center[i]
@@ -50,14 +50,13 @@ def make_pib(particle_count):
         x_particle=x_particle,
         v_particle=v_particle,
         charge=1,
-        #radius=0.000556605732511,
-        radius=50*MM,
+        radius=0.000556605732511,
+        #radius=50*MM,
         )
 
 def main():
-    #pcounts = [100*1000]
-    pcounts = [1]
-
+    pcounts = [100*1000]
+    #pcounts = [1]
 
     def obj_array_norm(oa):
         return sum(la.norm(oa_i)**2 for oa_i in oa)**0.5
@@ -90,10 +89,6 @@ def main():
             print "rel error", relative_error(
                     obj_array_norm(diff),
                     obj_array_norm(ref_j))
-
-            print "".join(
-                    "." if la.norm(diff[0][pib.discr.find_el_range(el.id)]) == 0 else "*"
-                    for el in pib.discr.mesh.elements)
 
         from hedge.visualization import SiloVisualizer
         vis = SiloVisualizer(pib.discr)
