@@ -86,9 +86,14 @@ def main():
         print "ref norm", obj_array_norm(ref_j)
         for comp_j in computed_j_fields[1:]:
             from hedge.tools import relative_error
+            diff = ref_j - comp_j
             print "rel error", relative_error(
-                    obj_array_norm(ref_j - comp_j),
+                    obj_array_norm(diff),
                     obj_array_norm(ref_j))
+
+            print "".join(
+                    "." if la.norm(diff[0][pib.discr.find_el_range(el.id)]) == 0 else "*"
+                    for el in pib.discr.mesh.elements)
 
         from hedge.visualization import SiloVisualizer
         vis = SiloVisualizer(pib.discr)

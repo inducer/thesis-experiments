@@ -1,3 +1,4 @@
+from __future__ import division
 import numpy
 import pycuda.driver as cuda
 import pycuda.gpuarray as gpuarray
