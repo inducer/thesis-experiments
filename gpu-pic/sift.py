@@ -123,11 +123,14 @@ def make_block_data(block_info_records, discr, dtype, threads_per_block):
 
 
 def time_sift(pib):
-    split_count = 1
+    from hedge.backends.cuda.tools import int_ceiling
+
     threads_per_block = 384     
+    sift_max_particles_per_block = 250000
     dtype = numpy.float32
     node_count = len(pib.discr.nodes)
     particle_count = len(pib.x_particle)
+    split_count = int_ceiling(particle_count/sift_max_particles_per_block)
 
     # partitioning ------------------------------------------------------------
     el_group, = pib.discr.element_groups
@@ -172,8 +175,10 @@ def time_sift(pib):
             "split_count": split_count,
             "sift_threads_per_block": threads_per_block,
             "sift_block_count": sift_block_count,
+            "sift_max_particles_per_block": sift_max_particles_per_block,
             "xdim_channels": xdim_channels,
             "vdim_channels": vdim_channels,
+            "axes": ["x", "y", "z", "w"],
             }
     ctx.update(pib.__dict__)
 
@@ -207,6 +212,8 @@ def time_sift(pib):
     #define PARTICLE_LIST_SIZE 1000
     #define THREADS_PER_BLOCK {{ sift_threads_per_block }}
     #define BLOCK_NUM (blockIdx.x)
+    #define PARTICLE_CHUNK_NUM (blockIdx.y)
+    #define PARTICLE_CHUNK_COUNT (gridDim.y)
     #define XDIM {{ xdim }}
     #define BLOCK_START tex1Dfetch(tex_block_starts, BLOCK_NUM)
     #define BLOCK_END tex1Dfetch(tex_block_starts, BLOCK_NUM+1)
@@ -231,6 +238,7 @@ def time_sift(pib):
     __shared__ float bbox_min[XDIM];
     __shared__ float bbox_max[XDIM];
     __shared__ unsigned out_of_particles_thread_count;
+    __shared__ unsigned block_end_particle;
 
     extern "C" __global__ void sift(
       float *debugbuf,
@@ -251,15 +259,11 @@ def time_sift(pib):
 
         out_of_particles_thread_count = 0;
         intersecting_particle_count = 0;
-        if (blockIdx.x == 0)
-        {
-            for (unsigned i = 0; i < XDIM; ++i)
-            {
-              debugbuf[i] = bbox_min[i];
-              debugbuf[3+i] = bbox_max[i];
-              debugbuf[100+i] = box_pad;
-            }
-        }
+
+        block_end_particle = min(
+          (PARTICLE_CHUNK_NUM+1)*{{ sift_max_particles_per_block }},
+          particle_count);
+
       }
       __syncthreads();
       
@@ -268,7 +272,9 @@ def time_sift(pib):
       my_j.y = 0;
       my_j.z = 0;
 
-      unsigned n_particle = threadIdx.x;
+      unsigned n_particle = threadIdx.x +
+         PARTICLE_CHUNK_NUM*{{ sift_max_particles_per_block }};
+
       while (true)
       {
         // sift ---------------------------------------------------------------
@@ -276,7 +282,7 @@ def time_sift(pib):
         while (true)
         {
           ## for i in range(3)
-          if (n_particle < particle_count)
+          if (n_particle < block_end_particle)
           {
             float3 x_particle = shorten<pos_vec>::call(
               tex1Dfetch(tex_x_particle, n_particle)); 
@@ -371,9 +377,11 @@ def time_sift(pib):
         __syncthreads();
       }
 
-      j[(0*{{sift_block_count}} + blockIdx.x)*THREADS_PER_BLOCK+threadIdx.x] = my_j.x;
-      j[(1*{{sift_block_count}} + blockIdx.x)*THREADS_PER_BLOCK+threadIdx.x] = my_j.y;
-      j[(2*{{sift_block_count}} + blockIdx.x)*THREADS_PER_BLOCK+threadIdx.x] = my_j.z;
+      ## for d in range(vdim)
+      j[(({{d}} * PARTICLE_CHUNK_COUNT + PARTICLE_CHUNK_NUM) * {{sift_block_count}} 
+          + blockIdx.x) * THREADS_PER_BLOCK 
+        +threadIdx.x] = my_j.{{axes[d]}};
+      ## endfor
     }
     \n""", line_statement_prefix="##")
 
@@ -441,7 +449,7 @@ def time_sift(pib):
         sift.smem, sift.registers, sift.lmem)
 
     j_grid_gpu = gpuarray.zeros(
-            (pib.vdim, threads_per_block*sift_block_count, ), 
+            (pib.vdim, split_count, threads_per_block*sift_block_count, ), 
             dtype=dtype)
 
 
@@ -455,7 +463,6 @@ def time_sift(pib):
 
     j_gpu = gpuarray.zeros((pib.vdim, node_count), dtype=dtype)
 
-    from hedge.backends.cuda.tools import int_ceiling
     collect_block_count = int_ceiling(node_count/threads_per_block)
 
     # launch ------------------------------------------------------------------
@@ -466,15 +473,16 @@ def time_sift(pib):
     from pyrticle.tools import PolynomialShapeFunction
     sf = PolynomialShapeFunction(pib.radius, pib.xdim)
 
-    print "LAUNCH"
+    print "SIFT"
     start.record()
     sift.prepared_call(
-            (sift_block_count, 1),
+            (sift_block_count, split_count),
             debugbuf.gpudata,
             j_grid_gpu.gpudata,
             pib.charge, pib.radius, pib.radius**2, sf.normalizer, 
             pib.radius,
             particle_count)
+    print "COLLECT"
     collect.prepared_call(
             (collect_block_count, 1),
             j_gpu.gpudata, block_permut_src_indices_gpu.gpudata,
