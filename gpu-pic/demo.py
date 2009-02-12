@@ -8,7 +8,7 @@ class ParticleInfoBlock(Record):
 def make_pib(particle_count):
 
     MM = 1e-3
-    if True:
+    if False:
         from pyrticle.geometry import make_cylinder_with_fine_core
         mesh = make_cylinder_with_fine_core(
             r=25*MM, inner_r=2.5*MM,
@@ -18,7 +18,8 @@ def make_pib(particle_count):
             radial_subdiv=10)
     else:
         from hedge.mesh import make_cylinder_mesh
-        mesh = make_cylinder_mesh(radius=25*MM, height=50*MM)
+        mesh = make_cylinder_mesh(radius=25*MM, height=50*MM,
+                max_volume=300*MM**3)
 
     xdim = 3
     vdim = 3
@@ -26,8 +27,8 @@ def make_pib(particle_count):
     vdim_align = 4 
 
     x_particle = 0.03*numpy.random.randn(particle_count, xdim)
-    x_particle[:,0] *= 0.1
-    x_particle[:,1] *= 0.1
+    x_particle[:,0] *= 0.01
+    x_particle[:,1] *= 0.01
 
     v_particle = numpy.zeros((particle_count, vdim))
     v_particle[:,0] = 1
@@ -48,7 +49,8 @@ def make_pib(particle_count):
         )
 
 def main():
-    pcounts = [100*1000]
+    #pcounts = [100*1000]
+    pcounts = [1]
 
     from brute import time_brute
     from sift import time_sift

@@ -14,7 +14,7 @@ class BlockInfo(Record):
 
 
 
-def make_blocks(discr, nodes_per_block):
+def make_blocks(discr, nodes_per_block, pad):
     from hedge.discretization import ones_on_volume
     mesh_volume = discr.integral(ones_on_volume(discr))
     dx =  (mesh_volume / len(discr))**(1/discr.dimensions) * 4
@@ -22,8 +22,13 @@ def make_blocks(discr, nodes_per_block):
     mesh = discr.mesh
     bbox_min, bbox_max = mesh.bounding_box()
 
+    bbox_min -= 1e-10
+    bbox_max += 1e-10
     bbox_size = bbox_max-bbox_min
     dims = numpy.asarray(bbox_size/dx, dtype=numpy.int32)
+
+    print bbox_min
+    print bbox_max
 
     from pyrticle._internal import Brick, BoxFloat
     brick = Brick(number=0,
@@ -36,18 +41,19 @@ def make_blocks(discr, nodes_per_block):
     grid_els = {}
     for el in discr.mesh.elements:
         for el_box_idx in brick.get_iterator(
-                BoxFloat(*el.bounding_box(discr.mesh.points))):
+                BoxFloat(*el.bounding_box(discr.mesh.points)).enlarged(1e-10)):
             grid_els.setdefault(brick.index(el_box_idx), []).append(el.id)
 
     # find nodes in each block
-    from pytools import flatten
     def get_brick_idx(point):
         try:
             return brick.index(brick.which_cell(point))
         except RuntimeError:
             return None
 
+    from pytools import flatten
     grid_idx_to_nodes = {}
+
     for grid_idx, element_ids in grid_els.iteritems():
         nodes = list(flatten([
             [ni for ni in range(
@@ -58,30 +64,38 @@ def make_blocks(discr, nodes_per_block):
         if nodes:
             grid_idx_to_nodes[grid_idx] = nodes
 
-    for grid_idx, nodes in grid_idx_to_nodes.iteritems():
+    for grid_idx, node_indices in grid_idx_to_nodes.iteritems():
+        split_idx = brick.split_index(grid_idx)
+        assert brick.index(split_idx) == grid_idx
         node_start = 0
-        while node_start < len(nodes):
-            some_node = nodes[node_start]
-            multi_idx = brick.which_cell(discr.nodes[some_node])
 
+        grid_bbox = brick.cell(split_idx).enlarged(pad)
+        assert brick.point(split_idx) in grid_bbox
+
+        for node in discr.nodes[node_indices]:
+            assert node in grid_bbox
+
+        enlarged_grid_bbox = grid_bbox.enlarged(pad)
+
+        while node_start < len(node_indices):
             yield BlockInfo(
-                    bbox_min=brick.origin + multi_idx*brick.stepwidths,
-                    bbox_max=brick.origin + (multi_idx+1)*brick.stepwidths,
-                    nodes=nodes[node_start:node_start+nodes_per_block],
+                    bbox_min=enlarged_grid_bbox.lower,
+                    bbox_max=enlarged_grid_bbox.upper,
+                    node_indices=node_indices[node_start:node_start+nodes_per_block]
                     )
             node_start += nodes_per_block
 
 
 
 
-def make_bboxes(block_info_records, dimensions, pad, dtype):
+def make_bboxes(block_info_records, dimensions, dtype):
     bir = block_info_records
 
     bboxes = numpy.empty((len(bir), dimensions, 2), dtype=dtype)
 
     for block_nr, block_info in enumerate(bir):
-        bboxes[block_nr,:,0] = block_info.bbox_min - pad
-        bboxes[block_nr,:,1] = block_info.bbox_max + pad
+        bboxes[block_nr,:,0] = block_info.bbox_min
+        bboxes[block_nr,:,1] = block_info.bbox_max
 
     return bboxes
 
@@ -91,21 +105,22 @@ def make_bboxes(block_info_records, dimensions, pad, dtype):
 def make_block_data(block_info_records, discr, dtype):
     bir = block_info_records
     block_starts = numpy.empty((len(bir)+1,), dtype=numpy.uint32)
-    block_nodes = numpy.empty((len(discr.nodes), discr.dimensions), dtype=dtype)
-    block_node_indices = numpy.empty((len(discr.nodes), ), dtype=numpy.uint32)
+    block_nodes = []
+    block_node_indices = []
 
     node_num = 0
     for block_nr, block_info in enumerate(bir):
         block_starts[block_nr] = node_num
-        l = len(block_info.nodes)
-        block_nodes[node_num:node_num+l] = discr.nodes[block_info.nodes]
-        block_node_indices[node_num:node_num+l] = block_info.nodes
-        node_num += l
-        assert node_num < len(discr.nodes)
+        block_nodes.extend(discr.nodes[block_info.node_indices])
+        block_node_indices.extend(block_info.node_indices)
+        node_num += len(block_info.node_indices)
 
     block_starts[len(bir)] = node_num
+    assert node_num == len(discr.nodes)
 
-    return block_starts, block_nodes, block_node_indices
+    return (block_starts, 
+            numpy.array(block_nodes, dtype=dtype), 
+            numpy.array(block_node_indices, dtype=numpy.uint32))
 
 
 
@@ -116,10 +131,6 @@ def time_sift(pib):
     node_count = len(pib.discr.nodes)
     particle_count = len(pib.x_particle)
 
-    charge = 1
-    radius = 0.000556605732511
-    #radius = 50*MM
-
     # partitioning ------------------------------------------------------------
     el_group, = pib.discr.element_groups
     ldis = el_group.local_discretization
@@ -127,8 +138,10 @@ def time_sift(pib):
     max_nodes_per_block = threads_per_block
 
     # data generation ---------------------------------------------------------
-    block_info_records = list(make_blocks(pib.discr,  max_nodes_per_block))
-    bboxes = make_bboxes(block_info_records, pib.discr.dimensions, radius, dtype)
+    block_info_records = list(make_blocks(
+        pib.discr,  max_nodes_per_block, pib.radius))
+
+    bboxes = make_bboxes(block_info_records, pib.discr.dimensions, dtype)
     block_starts, block_nodes, block_node_indices = \
         make_block_data(block_info_records, pib.discr, dtype)
 
@@ -221,6 +234,7 @@ def time_sift(pib):
       float *debugbuf,
       velocity_vec *j, 
       float particle, float radius, float radius_squared, float normalizer, 
+      float box_pad,
       unsigned node_count, unsigned particle_count
       )
     {
@@ -257,12 +271,12 @@ def time_sift(pib):
               tex1Dfetch(tex_x_particle, n_particle)); 
 
             int out_of_bbox_indicator =
-                signbit(x_particle.x - bbox_min[0])
-              + signbit(bbox_max[0] - x_particle.x)
-              + signbit(x_particle.y - bbox_min[1])
-              + signbit(bbox_max[1] - x_particle.y)
-              + signbit(x_particle.z - bbox_min[2])
-              + signbit(bbox_max[2] - x_particle.z)
+                signbit(x_particle.x - bbox_min[0] - box_pad)
+              + signbit(bbox_max[0] + box_pad - x_particle.x)
+              + signbit(x_particle.y - bbox_min[1] - box_pad)
+              + signbit(bbox_max[1] + box_pad - x_particle.y)
+              + signbit(x_particle.z - bbox_min[2] - box_pad)
+              + signbit(bbox_max[2] + box_pad - x_particle.z)
               ;
             if (!out_of_bbox_indicator)
             {
@@ -307,8 +321,9 @@ def time_sift(pib):
             intersecting_particle_count,
             PARTICLE_LIST_SIZE);
 
-          if (threadIdx.x == 0)
-            debugbuf[blockIdx.x*5+1] += intersecting_particle_count;
+
+          //if (threadIdx.x == 0)
+            //debugbuf[blockIdx.x*5+1] += intersecting_particle_count;
 
           for (unsigned block_particle_nr = 0;
                block_particle_nr < block_particle_count;
@@ -372,28 +387,22 @@ def time_sift(pib):
     bboxes_gpu.bind_to_texref(tex_bboxes)
 
     tex_block_starts = smod.get_texref("tex_block_starts")
-    tex_block_starts.set_flags(cuda.TRSF_READ_AS_INTEGER)
-    block_starts_gpu.bind_to_texref(tex_block_starts)
+    block_starts_gpu.bind_to_texref_ext(tex_block_starts)
 
     tex_block_nodes = smod.get_texref("tex_block_nodes")
-    tex_block_nodes.set_format(cuda.array_format.FLOAT, xdim_channels)
-    block_nodes_gpu.bind_to_texref(tex_block_nodes)
-
-    tex_block_nodes = smod.get_texref("tex_block_nodes")
-    tex_block_nodes.set_format(cuda.array_format.FLOAT, xdim_channels)
-    block_nodes_gpu.bind_to_texref(tex_block_nodes)
+    block_nodes_gpu.bind_to_texref_ext(tex_block_nodes, xdim_channels)
 
     tex_block_node_indices = smod.get_texref("tex_block_node_indices")
-    tex_block_node_indices.set_flags(cuda.TRSF_READ_AS_INTEGER)
-    block_starts_gpu.bind_to_texref(tex_block_node_indices)
+    block_node_indices_gpu.bind_to_texref_ext(tex_block_node_indices)
 
     from hedge.backends.cuda.tools import int_ceiling
     block_count = len(block_info_records)
 
-    debugbuf = gpuarray.zeros((block_count*5,), dtype=numpy.float32)
+    debugbuf = gpuarray.zeros((
+      min(20000, block_count*5),), dtype=numpy.float32)
 
     func = smod.get_function("sift").prepare(
-            "PPffffIIPP",
+            "PPfffffII",
             block=(threads_per_block,1,1),
             texrefs=[tex_x_particle, tex_v_particle, tex_bboxes, 
               tex_block_starts, tex_block_nodes, tex_block_node_indices])
@@ -404,6 +413,7 @@ def time_sift(pib):
     stop = cuda.Event()
 
     j_gpu = gpuarray.zeros((node_count, pib.vdim), dtype=dtype)
+    print j_gpu.shape
 
     from pyrticle.tools import PolynomialShapeFunction
     sf = PolynomialShapeFunction(pib.radius, pib.xdim)
@@ -414,22 +424,20 @@ def time_sift(pib):
             (block_count, 1),
             debugbuf.gpudata,
             j_gpu.gpudata,
-            pib.charge, pib.radius, pib.radius**2, sf.normalizer,
-            node_count, particle_count,
-            cuda.mem_alloc(block_count*4), # out_of_particles_thread_count
-            cuda.mem_alloc(block_count*4), # intersecting_particle_count
-            )
+            pib.charge, pib.radius, pib.radius**2, sf.normalizer, 
+            0, #pad
+            node_count, particle_count)
     stop.record()
     stop.synchronize()
 
-    if False:
+    if True:
         numpy.set_printoptions(linewidth=150, threshold=2**15, suppress=True)
         debugbuf = debugbuf.get()
-        debugbuf[debugbuf > particle_count * 2] = -1
-        print debugbuf[:5*block_count].reshape((block_count,5))
+        #print debugbuf[:5*block_count].reshape((block_count,5))
+        print debugbuf[:1000]
 
     from hedge.tools import to_obj_array
-    j = to_obj_array(j_gpu.get().T)[:3]
+    j = to_obj_array(j_gpu.get().T)
 
     t = stop.time_since(start)*1e-3
     return particle_count/t, j
