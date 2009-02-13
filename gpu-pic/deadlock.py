@@ -5,7 +5,6 @@ import pycuda.driver as cuda
 import pycuda.gpuarray as gpuarray
 import pycuda.autoinit
 import pycuda.tools
-from pytools import Record
 
 
 
@@ -76,7 +75,6 @@ def time_sift():
 
     // main kernel ------------------------------------------------------------
 
-    __shared__ volatile unsigned intersecting_particle_count;
     __shared__ float bbox_min[XDIM];
     __shared__ float bbox_max[XDIM];
     __shared__ unsigned out_of_particles_thread_count;
@@ -98,8 +96,6 @@ def time_sift():
           bbox_max[i] = tex1Dfetch(tex_bboxes, (BLOCK_NUM*XDIM + i) * 2 + 1) + box_pad;
         }
 
-        intersecting_particle_count = 0;
-
         block_end_particle = 10000;
       }
       __syncthreads();
@@ -117,21 +113,10 @@ def time_sift():
           {
             float4 x_particle = tex1Dfetch(tex_x_particle, n_particle); 
 
-            int out_of_bbox_indicator =
-                signbit(x_particle.x - bbox_min[0])
-              + signbit(bbox_max[0] - x_particle.x)
-              + signbit(x_particle.y - bbox_min[1])
-              + signbit(bbox_max[1] - x_particle.y)
-              + signbit(x_particle.z - bbox_min[2])
-              + signbit(bbox_max[2] - x_particle.z)
-              ;
+            int out_of_bbox_indicator = sin(x_particle.x*500) > 0.1;
             if (!out_of_bbox_indicator)
             {
-              unsigned idx_in_list = intersecting_particle_count++;
-              if (idx_in_list < PARTICLE_LIST_SIZE)
-              {
-                n_particle += THREADS_PER_BLOCK;
-              }
+              n_particle += THREADS_PER_BLOCK;
             }
             else
               n_particle += THREADS_PER_BLOCK;
@@ -139,12 +124,9 @@ def time_sift():
           else
             break;
 
-          if (intersecting_particle_count >= PARTICLE_LIST_SIZE)
-            break;
         }
 
         out_of_particles_thread_count = 0;
-        intersecting_particle_count = 0;
         #if 1
         if (n_particle >= block_end_particle)
           atomicAdd(&out_of_particles_thread_count, 1);
@@ -176,7 +158,7 @@ def time_sift():
 
     # launch ------------------------------------------------------------------
 
-    print "SIFT"
+    print "LAUNCH"
     pib_radius = 0.3
     sift.prepared_call(
             (sift_block_count, 100),
@@ -196,5 +178,5 @@ def time_sift():
 
 
 if __name__ == "__main__":
-    print "V50"
+    print "V54"
     time_sift()
