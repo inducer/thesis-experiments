@@ -98,31 +98,6 @@ def make_bboxes(block_info_records, dimensions, dtype):
 
 
 
-def make_block_data(block_info_records, discr, dtype, threads_per_block):
-    bir = block_info_records
-    block_starts = numpy.empty((len(bir)+1,), dtype=numpy.uint32)
-    block_nodes = []
-    block_permut_src_indices = numpy.zeros((len(discr.nodes),), dtype=numpy.uint32)
-
-    node_num = 0
-    for block_nr, block_info in enumerate(bir):
-        l = len(block_info.node_indices)
-        block_starts[block_nr] = node_num
-        block_nodes.extend(discr.nodes[block_info.node_indices])
-        block_permut_src_indices[block_info.node_indices] = \
-                threads_per_block*block_nr + numpy.arange(l, dtype=numpy.uint32)
-        node_num += l
-
-    block_starts[len(bir)] = node_num
-    assert node_num == len(discr.nodes)
-
-    return (block_starts, 
-            numpy.array(block_nodes, dtype=dtype), 
-            block_permut_src_indices)
-
-
-
-
 def time_sift(pib):
     from hedge.backends.cuda.tools import int_ceiling
 
@@ -145,32 +120,17 @@ def time_sift(pib):
     sift_block_count = len(block_info_records)
 
     bboxes = make_bboxes(block_info_records, pib.discr.dimensions, dtype)
-    block_starts, block_nodes, block_permut_src_indices = \
-        make_block_data(block_info_records, pib.discr, dtype, threads_per_block)
 
     # To-GPU copy -------------------------------------------------------------
     devdata = pycuda.tools.DeviceData()
 
     xdim_channels = devdata.make_valid_tex_channel_count(pib.xdim)
-    vdim_channels = devdata.make_valid_tex_channel_count(pib.vdim)
-
-    block_nodes_tdata = numpy.zeros(
-            (block_nodes.shape[0], xdim_channels), dtype=dtype)
-    block_nodes_tdata[:,:pib.xdim] = block_nodes
 
     x_particle = numpy.zeros((particle_count, xdim_channels), dtype=dtype)
     x_particle[:particle_count, :pib.xdim] = pib.x_particle
 
-    v_particle = numpy.zeros((particle_count, vdim_channels), dtype=dtype)
-    v_particle[:particle_count, :pib.vdim] = pib.v_particle
-
     x_particle_gpu = gpuarray.to_gpu(x_particle)
-    v_particle_gpu = gpuarray.to_gpu(v_particle)
-
     bboxes_gpu = gpuarray.to_gpu(bboxes)
-    block_starts_gpu = gpuarray.to_gpu(block_starts)
-    block_nodes_gpu = gpuarray.to_gpu(block_nodes_tdata)
-    block_permut_src_indices_gpu = gpuarray.to_gpu(block_permut_src_indices)
 
     # GPU code ----------------------------------------------------------------
     ctx = {
@@ -179,7 +139,6 @@ def time_sift(pib):
             "sift_block_count": sift_block_count,
             "sift_max_particles_per_block": sift_max_particles_per_block,
             "xdim_channels": xdim_channels,
-            "vdim_channels": vdim_channels,
             "axes": ["x", "y", "z", "w"],
             }
     ctx.update(pib.__dict__)
@@ -191,24 +150,15 @@ def time_sift(pib):
     #define PARTICLE_LIST_SIZE 1000
     #define THREADS_PER_BLOCK {{ sift_threads_per_block }}
     #define BLOCK_NUM (blockIdx.x)
-    #define PARTICLE_CHUNK_NUM (blockIdx.y)
-    #define PARTICLE_CHUNK_COUNT (gridDim.y)
     #define XDIM {{ xdim }}
-    #define BLOCK_START tex1Dfetch(tex_block_starts, BLOCK_NUM)
-    #define BLOCK_END tex1Dfetch(tex_block_starts, BLOCK_NUM+1)
 
     typedef float{{ xdim_channels }} pos_align_vec;
-    typedef float{{ vdim_channels }} velocity_align_vec;
     typedef float{{ xdim }} pos_vec;
-    typedef float{{ vdim }} velocity_vec;
 
     // textures ---------------------------------------------------------------
 
     texture<pos_align_vec, 1, cudaReadModeElementType> tex_x_particle;
-    texture<velocity_align_vec, 1, cudaReadModeElementType> tex_v_particle;
     texture<float, 1, cudaReadModeElementType> tex_bboxes;
-    texture<unsigned, 1, cudaReadModeElementType> tex_block_starts;
-    texture<pos_align_vec, 1, cudaReadModeElementType> tex_block_nodes;
 
     // main kernel ------------------------------------------------------------
 
@@ -221,7 +171,6 @@ def time_sift(pib):
 
     extern "C" __global__ void sift(
       float *debugbuf,
-      float *j, 
       float particle, float radius, float radius_squared, float normalizer, 
       float box_pad,
       unsigned particle_count
@@ -238,10 +187,7 @@ def time_sift(pib):
 
         intersecting_particle_count = 0;
 
-        block_end_particle = min(
-          (PARTICLE_CHUNK_NUM+1)*{{ sift_max_particles_per_block }},
-          particle_count);
-
+        block_end_particle = 10000;
       }
       __syncthreads();
       
@@ -307,34 +253,16 @@ def time_sift(pib):
     tex_x_particle.set_format(cuda.array_format.FLOAT, xdim_channels)
     x_particle_gpu.bind_to_texref(tex_x_particle)
 
-    tex_v_particle = smod_sift.get_texref("tex_v_particle")
-    tex_v_particle.set_format(cuda.array_format.FLOAT, vdim_channels)
-    v_particle_gpu.bind_to_texref(tex_v_particle)
-
     tex_bboxes = smod_sift.get_texref("tex_bboxes")
     bboxes_gpu.bind_to_texref(tex_bboxes)
-
-    tex_block_starts = smod_sift.get_texref("tex_block_starts")
-    block_starts_gpu.bind_to_texref_ext(tex_block_starts)
-
-    tex_block_nodes = smod_sift.get_texref("tex_block_nodes")
-    block_nodes_gpu.bind_to_texref_ext(tex_block_nodes, xdim_channels)
 
     debugbuf = gpuarray.zeros((
       min(20000, sift_block_count*5),), dtype=numpy.float32)
 
     sift = smod_sift.get_function("sift").prepare(
-            "PPfffffI",
+            "PfffffI",
             block=(threads_per_block,1,1),
-            texrefs=[tex_x_particle, tex_v_particle, tex_bboxes, 
-              tex_block_starts, tex_block_nodes])
-    print "stats: smem=%d regs=%d lmem=%d" % (
-        sift.smem, sift.registers, sift.lmem)
-
-    j_grid_gpu = gpuarray.zeros(
-            (pib.vdim, split_count, threads_per_block*sift_block_count, ), 
-            dtype=dtype)
-
+            texrefs=[tex_x_particle, tex_bboxes])
 
     # launch ------------------------------------------------------------------
 
@@ -343,9 +271,8 @@ def time_sift(pib):
 
     print "SIFT"
     sift.prepared_call(
-            (sift_block_count, split_count),
+            (sift_block_count, 100),
             debugbuf.gpudata,
-            j_grid_gpu.gpudata,
             pib.charge, pib.radius, pib.radius**2, sf.normalizer, 
             pib.radius,
             particle_count)
@@ -379,9 +306,7 @@ def make_pib(particle_count):
                 max_volume=300*MM**3)
 
     xdim = 3
-    vdim = 3
     xdim_align = 4 
-    vdim_align = 4 
 
     mesh_min, mesh_max = mesh.bounding_box()
     center = (mesh_min+mesh_max)*0.5
@@ -393,9 +318,6 @@ def make_pib(particle_count):
     for i in range(xdim):
         x_particle[:,i] += center[i]
 
-    v_particle = numpy.zeros((particle_count, vdim))
-    v_particle[:,0] = 1
-
     from hedge.backends.jit import Discretization
     discr = Discretization(mesh, order=4)
 
@@ -403,16 +325,14 @@ def make_pib(particle_count):
         mesh=mesh,
         discr=discr,
         xdim=xdim,
-        vdim=vdim,
         x_particle=x_particle,
-        v_particle=v_particle,
         charge=1,
         radius=0.000556605732511,
         #radius=50*MM,
         )
 
 def main():
-    print "V40"
+    print "V45"
     print "Making PIB"
     pib = make_pib(10**5)
     print "done"
