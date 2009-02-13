@@ -412,7 +412,7 @@ def make_pib(particle_count):
         )
 
 def main():
-    print "V30"
+    print "V40"
     print "Making PIB"
     pib = make_pib(10**5)
     print "done"
