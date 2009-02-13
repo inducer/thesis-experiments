@@ -18,12 +18,6 @@ def time_sift():
 
     devdata = pycuda.tools.DeviceData()
 
-    xdim_channels = devdata.make_valid_tex_channel_count(xdim)
-    x_particle = numpy.zeros((particle_count, xdim_channels), dtype=numpy.float32)
-    x_particle[:particle_count, :xdim] = numpy.random.randn(particle_count, xdim)
-
-    x_particle_gpu = gpuarray.to_gpu(x_particle)
-
     # GPU code ----------------------------------------------------------------
     sift_code = """
     // defines ----------------------------------------------------------------
@@ -32,10 +26,6 @@ def time_sift():
 
     typedef float4 pos_align_vec;
     typedef float3 pos_vec;
-
-    // textures ---------------------------------------------------------------
-
-    texture<pos_align_vec, 1, cudaReadModeElementType> tex_x_particle;
 
     // main kernel ------------------------------------------------------------
 
@@ -60,17 +50,7 @@ def time_sift():
         for (blubb = 0; blubb < 20; ++blubb)
         {
           if (n_particle < block_end_particle)
-          {
-            float4 x_particle = tex1Dfetch(tex_x_particle, n_particle); 
-
-            int out_of_bbox_indicator = sin(x_particle.x*500) > 0.1;
-            if (!out_of_bbox_indicator)
-            {
-              n_particle += THREADS_PER_BLOCK;
-            }
-            else
-              n_particle += THREADS_PER_BLOCK;
-          }
+            n_particle += THREADS_PER_BLOCK;
           else
             break;
 
@@ -89,18 +69,11 @@ def time_sift():
 
     smod_sift = cuda.SourceModule(sift_code, no_extern_c=True, keep=True)
 
-    # sift preparation --------------------------------------------------------
-
-    tex_x_particle = smod_sift.get_texref("tex_x_particle")
-    tex_x_particle.set_format(cuda.array_format.FLOAT, xdim_channels)
-    x_particle_gpu.bind_to_texref_ext(tex_x_particle)
-
     debugbuf = gpuarray.zeros((
       min(20000, sift_block_count*5),), dtype=numpy.float32)
 
     sift = smod_sift.get_function("sift").prepare("P", 
-        block=(threads_per_block,1,1),
-        texrefs=[tex_x_particle])
+        block=(threads_per_block,1,1))
 
     # launch ------------------------------------------------------------------
 
@@ -117,5 +90,5 @@ def time_sift():
 
 
 if __name__ == "__main__":
-    print "V61"
+    print "V66"
     time_sift()

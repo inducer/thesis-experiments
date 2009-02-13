@@ -123,14 +123,16 @@ def make_block_data(block_info_records, discr, dtype, threads_per_block):
 
 
 def time_sift(pib):
+    print "V24"
     from hedge.backends.cuda.tools import int_ceiling
 
     threads_per_block = 384     
-    sift_max_particles_per_block = 250000
+    sift_max_particles_per_block = 10000
     dtype = numpy.float32
     node_count = len(pib.discr.nodes)
     particle_count = len(pib.x_particle)
     split_count = int_ceiling(particle_count/sift_max_particles_per_block)
+    print split_count, "splits"
 
     # partitioning ------------------------------------------------------------
     el_group, = pib.discr.element_groups
@@ -233,7 +235,7 @@ def time_sift(pib):
 
     // main kernel ------------------------------------------------------------
 
-    __shared__ unsigned intersecting_particle_count;
+    __shared__ volatile unsigned intersecting_particle_count;
     __shared__ unsigned intersecting_particles[PARTICLE_LIST_SIZE];
     __shared__ float bbox_min[XDIM];
     __shared__ float bbox_max[XDIM];
@@ -257,7 +259,6 @@ def time_sift(pib):
           bbox_max[i] = tex1Dfetch(tex_bboxes, (BLOCK_NUM*XDIM + i) * 2 + 1) + box_pad;
         }
 
-        out_of_particles_thread_count = 0;
         intersecting_particle_count = 0;
 
         block_end_particle = min(
@@ -275,13 +276,15 @@ def time_sift(pib):
       unsigned n_particle = threadIdx.x +
          PARTICLE_CHUNK_NUM*{{ sift_max_particles_per_block }};
 
-      while (true)
+      unsigned blah, blubb;
+      for (blah = 0; blah < 20; ++blah)
+      //while(true)
       {
         // sift ---------------------------------------------------------------
         
-        while (true)
+        for (blubb = 0; blubb < 20; ++blubb)
+        // while (true)
         {
-          ## for i in range(3)
           if (n_particle < block_end_particle)
           {
             float3 x_particle = shorten<pos_vec>::call(
@@ -297,7 +300,12 @@ def time_sift(pib):
               ;
             if (!out_of_bbox_indicator)
             {
-              unsigned idx_in_list = atomicAdd(&intersecting_particle_count, 1);
+              /*
+              unsigned idx_in_list = atomicAdd(
+                (unsigned *) // cast away volatile
+                &intersecting_particle_count, 1);
+                */
+              unsigned idx_in_list = intersecting_particle_count++;
               if (idx_in_list < PARTICLE_LIST_SIZE)
               {
                 intersecting_particles[idx_in_list] = n_particle;
@@ -308,27 +316,15 @@ def time_sift(pib):
               n_particle += THREADS_PER_BLOCK;
           }
           else
-          {
-            // every thread should only contribute to out_of_particles_thread_count once.
-
-            if (n_particle != UINT_MAX)
-              atomicAdd(&out_of_particles_thread_count, 1);
-            n_particle = UINT_MAX;
-          }
-          ## endfor
-
-          // loop end conditions
-
-          __syncthreads();
-          if (out_of_particles_thread_count == THREADS_PER_BLOCK)
             break;
 
           if (intersecting_particle_count >= PARTICLE_LIST_SIZE)
             break;
-          __syncthreads();
         }
+        //__syncthreads();
 
         // add up intersecting_particles --------------------------------------
+        #if 0
         if (threadIdx.x < BLOCK_END-BLOCK_START)
         {
           pos_vec x_node = shorten<pos_vec>::call(
@@ -337,6 +333,11 @@ def time_sift(pib):
           unsigned block_particle_count = min(
             intersecting_particle_count,
             PARTICLE_LIST_SIZE);
+
+          /*
+          if (threadIdx.x == 0 && block_particle_count)
+              debugbuf[blockIdx.x] = block_particle_count;
+              */
 
           for (unsigned block_particle_nr = 0;
                block_particle_nr < block_particle_count;
@@ -368,14 +369,24 @@ def time_sift(pib):
             }
           }
         }
+        #endif
 
+        out_of_particles_thread_count = 0;
+        //__syncthreads();
+        intersecting_particle_count = 0;
+        if (n_particle >= block_end_particle)
+        #if 0
+          atomicAdd(&out_of_particles_thread_count, 1);
+        #else
+          out_of_particles_thread_count += 1;
+        #endif
+        //__syncthreads();
         if (out_of_particles_thread_count == THREADS_PER_BLOCK)
           break;
-
-        __syncthreads();
-        intersecting_particle_count = 0;
-        __syncthreads();
       }
+      debugbuf[3*blockIdx.x] = blah;
+      debugbuf[3*blockIdx.x+1] = blubb;
+      debugbuf[3*blockIdx.x+2] = out_of_particles_thread_count;
 
       ## for d in range(vdim)
       j[(({{d}} * PARTICLE_CHUNK_COUNT + PARTICLE_CHUNK_NUM) * {{sift_block_count}} 
@@ -482,6 +493,8 @@ def time_sift(pib):
             pib.charge, pib.radius, pib.radius**2, sf.normalizer, 
             pib.radius,
             particle_count)
+    cuda.Context.synchronize()
+
     print "COLLECT"
     collect.prepared_call(
             (collect_block_count, 1),
@@ -495,7 +508,7 @@ def time_sift(pib):
         numpy.set_printoptions(linewidth=150, threshold=2**15, suppress=True)
         debugbuf = debugbuf.get()
         #print debugbuf[:5*sift_block_count].reshape((sift_block_count,5))
-        print debugbuf[:1000]
+        print debugbuf[:3*sift_block_count]
 
     from hedge.tools import to_obj_array
     j = to_obj_array(j_gpu.get())
