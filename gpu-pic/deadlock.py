@@ -10,144 +10,64 @@ from pytools import Record
 
 
 
-class BlockInfo(Record):
-    pass
+def make_bboxes(block_count, dimensions, dtype):
+    block_count = 4098
+    n = block_count**(1/3)
+    dx = 2/n
+    
+    bboxes = numpy.empty((block_count, dimensions, 2), dtype=dtype)
 
-
-
-def make_blocks(discr, nodes_per_block):
-    from hedge.discretization import ones_on_volume
-    mesh_volume = discr.integral(ones_on_volume(discr))
-    dx =  (mesh_volume / len(discr))**(1/discr.dimensions) * 4
-
-    mesh = discr.mesh
-    bbox_min, bbox_max = mesh.bounding_box()
-
-    bbox_min -= 1e-10
-    bbox_max += 1e-10
-    bbox_size = bbox_max-bbox_min
-    dims = numpy.asarray(bbox_size/dx, dtype=numpy.int32)
-
-    from pyrticle._internal import Brick, BoxFloat
-    brick = Brick(number=0,
-            start_index=0,
-            stepwidths=bbox_size/dims,
-            origin=bbox_min,
-            dimensions=dims)
-
-    # find elements that overlap each grid index
-    grid_els = {}
-    for el in discr.mesh.elements:
-        for el_box_idx in brick.get_iterator(
-                BoxFloat(*el.bounding_box(discr.mesh.points)).enlarged(1e-10)):
-            grid_els.setdefault(brick.index(el_box_idx), []).append(el.id)
-
-    # find nodes in each block
-    def get_brick_idx(point):
-        try:
-            return brick.index(brick.which_cell(point))
-        except RuntimeError:
-            return None
-
-    from pytools import flatten
-    grid_idx_to_nodes = {}
-
-    for grid_idx, element_ids in grid_els.iteritems():
-        nodes = list(flatten([
-            [ni for ni in range(
-                discr.find_el_range(el_id).start,
-                discr.find_el_range(el_id).stop)
-                if get_brick_idx(discr.nodes[ni]) == grid_idx]
-            for el_id in element_ids]))
-        if nodes:
-            grid_idx_to_nodes[grid_idx] = nodes
-
-    for grid_idx, node_indices in grid_idx_to_nodes.iteritems():
-        split_idx = brick.split_index(grid_idx)
-        assert brick.index(split_idx) == grid_idx
-        node_start = 0
-
-        grid_bbox = brick.cell(split_idx)
-        assert brick.point(split_idx) in grid_bbox
-
-        for node in discr.nodes[node_indices]:
-            assert node in grid_bbox
-
-        while node_start < len(node_indices):
-            yield BlockInfo(
-                    bbox_min=grid_bbox.lower,
-                    bbox_max=grid_bbox.upper,
-                    node_indices=node_indices[node_start:node_start+nodes_per_block]
-                    )
-            node_start += nodes_per_block
-
-
-
-
-def make_bboxes(block_info_records, dimensions, dtype):
-    bir = block_info_records
-
-    bboxes = numpy.empty((len(bir), dimensions, 2), dtype=dtype)
-
-    for block_nr, block_info in enumerate(bir):
-        bboxes[block_nr,:,0] = block_info.bbox_min
-        bboxes[block_nr,:,1] = block_info.bbox_max
+    block_nr = 0
+    for xi in numpy.arange(-1, 1, dx):
+        for yi in numpy.arange(-1, 1, dx):
+            for zi in numpy.arange(-1, 1, dx):
+                pt = numpy.array([xi,yi,zi])
+                bboxes[block_nr,:,0] = pt-dx/2
+                bboxes[block_nr,:,1] = pt+dx/2
+                if block_nr >= block_count:
+                    break
 
     return bboxes
 
 
 
 
-def time_sift(pib):
+def time_sift():
     from hedge.backends.cuda.tools import int_ceiling
+
+    particle_count = 10**5
+    xdim = 3
+    pib_x_particle = numpy.random.randn(particle_count, xdim)
 
     threads_per_block = 384     
     dtype = numpy.float32
-    node_count = len(pib.discr.nodes)
-    particle_count = len(pib.x_particle)
-
-    # partitioning ------------------------------------------------------------
-    el_group, = pib.discr.element_groups
-    ldis = el_group.local_discretization
-
-    max_nodes_per_block = threads_per_block
 
     # data generation ---------------------------------------------------------
-    block_info_records = list(make_blocks(pib.discr,  max_nodes_per_block))
-    sift_block_count = len(block_info_records)
+    sift_block_count = 4098
 
-    bboxes = make_bboxes(block_info_records, pib.discr.dimensions, dtype)
+    bboxes = make_bboxes(sift_block_count, xdim, dtype)
 
     # To-GPU copy -------------------------------------------------------------
     devdata = pycuda.tools.DeviceData()
 
-    xdim_channels = devdata.make_valid_tex_channel_count(pib.xdim)
-
+    xdim_channels = devdata.make_valid_tex_channel_count(xdim)
     x_particle = numpy.zeros((particle_count, xdim_channels), dtype=dtype)
-    x_particle[:particle_count, :pib.xdim] = pib.x_particle
+    x_particle[:particle_count, :xdim] = pib_x_particle
 
     x_particle_gpu = gpuarray.to_gpu(x_particle)
     bboxes_gpu = gpuarray.to_gpu(bboxes)
 
     # GPU code ----------------------------------------------------------------
-    ctx = {
-            "sift_threads_per_block": threads_per_block,
-            "sift_block_count": sift_block_count,
-            "xdim_channels": xdim_channels,
-            }
-    ctx.update(pib.__dict__)
-
-    from jinja2 import Template
-    sift_tpl = Template("""
+    sift_code = """
     // defines ----------------------------------------------------------------
 
     #define PARTICLE_LIST_SIZE 1000
-    #define THREADS_PER_BLOCK {{ sift_threads_per_block }}
+    #define THREADS_PER_BLOCK 384
     #define BLOCK_NUM (blockIdx.x)
-    #define XDIM {{ xdim }}
+    #define XDIM 3
 
-    typedef float{{ xdim_channels }} pos_align_vec;
-    typedef float{{ xdim }} pos_vec;
+    typedef float4 pos_align_vec;
+    typedef float3 pos_vec;
 
     // textures ---------------------------------------------------------------
 
@@ -233,11 +153,9 @@ def time_sift(pib):
           break;
       }
     }
-    \n""", line_statement_prefix="##")
+    \n"""
 
-    smod_sift = cuda.SourceModule(
-            sift_tpl.render(**ctx), 
-            no_extern_c=True, keep=True)
+    smod_sift = cuda.SourceModule(sift_code, no_extern_c=True, keep=True)
 
     # sift preparation --------------------------------------------------------
 
@@ -258,15 +176,13 @@ def time_sift(pib):
 
     # launch ------------------------------------------------------------------
 
-    from pyrticle.tools import PolynomialShapeFunction
-    sf = PolynomialShapeFunction(pib.radius, pib.xdim)
-
     print "SIFT"
+    pib_radius = 0.3
     sift.prepared_call(
             (sift_block_count, 100),
             debugbuf.gpudata,
-            pib.charge, pib.radius, pib.radius**2, sf.normalizer, 
-            pib.radius,
+            1, pib_radius, pib_radius**2, 1, 
+            pib_radius,
             particle_count)
     cuda.Context.synchronize()
 
@@ -279,46 +195,6 @@ def time_sift(pib):
 
 
 
-class ParticleInfoBlock(Record):
-    pass
-
-def make_pib(particle_count):
-    MM = 1e-3
-    from pyrticle.geometry import make_cylinder_with_fine_core
-    mesh = make_cylinder_with_fine_core(
-        r=25*MM, inner_r=2.5*MM,
-        min_z=-50*MM, max_z=50*MM,
-        max_volume_inner=10*MM**3,
-        max_volume_outer=100*MM**3,
-        radial_subdiv=10)
-
-    xdim = 3
-    xdim_align = 4 
-
-    mesh_min, mesh_max = mesh.bounding_box()
-    center = (mesh_min+mesh_max)*0.5
-
-    x_particle = 0.03*numpy.random.randn(particle_count, xdim)
-
-    from hedge.backends.jit import Discretization
-    discr = Discretization(mesh, order=4)
-
-    return ParticleInfoBlock(
-        mesh=mesh,
-        discr=discr,
-        xdim=xdim,
-        x_particle=x_particle,
-        charge=1,
-        radius=0.000556605732511,
-        #radius=50*MM,
-        )
-
-def main():
-    print "V46"
-    print "Making PIB"
-    pib = make_pib(10**5)
-    print "done"
-    time_sift(pib)
-
 if __name__ == "__main__":
-    main()
+    print "V50"
+    time_sift()
