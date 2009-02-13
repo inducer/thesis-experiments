@@ -102,12 +102,9 @@ def time_sift(pib):
     from hedge.backends.cuda.tools import int_ceiling
 
     threads_per_block = 384     
-    sift_max_particles_per_block = 10000
     dtype = numpy.float32
     node_count = len(pib.discr.nodes)
     particle_count = len(pib.x_particle)
-    split_count = int_ceiling(particle_count/sift_max_particles_per_block)
-    print split_count, "splits"
 
     # partitioning ------------------------------------------------------------
     el_group, = pib.discr.element_groups
@@ -134,12 +131,9 @@ def time_sift(pib):
 
     # GPU code ----------------------------------------------------------------
     ctx = {
-            "split_count": split_count,
             "sift_threads_per_block": threads_per_block,
             "sift_block_count": sift_block_count,
-            "sift_max_particles_per_block": sift_max_particles_per_block,
             "xdim_channels": xdim_channels,
-            "axes": ["x", "y", "z", "w"],
             }
     ctx.update(pib.__dict__)
 
@@ -163,7 +157,6 @@ def time_sift(pib):
     // main kernel ------------------------------------------------------------
 
     __shared__ volatile unsigned intersecting_particle_count;
-    __shared__ unsigned intersecting_particles[PARTICLE_LIST_SIZE];
     __shared__ float bbox_min[XDIM];
     __shared__ float bbox_max[XDIM];
     __shared__ unsigned out_of_particles_thread_count;
@@ -217,7 +210,6 @@ def time_sift(pib):
               unsigned idx_in_list = intersecting_particle_count++;
               if (idx_in_list < PARTICLE_LIST_SIZE)
               {
-                intersecting_particles[idx_in_list] = n_particle;
                 n_particle += THREADS_PER_BLOCK;
               }
             }
@@ -292,18 +284,13 @@ class ParticleInfoBlock(Record):
 
 def make_pib(particle_count):
     MM = 1e-3
-    if True:
-        from pyrticle.geometry import make_cylinder_with_fine_core
-        mesh = make_cylinder_with_fine_core(
-            r=25*MM, inner_r=2.5*MM,
-            min_z=-50*MM, max_z=50*MM,
-            max_volume_inner=10*MM**3,
-            max_volume_outer=100*MM**3,
-            radial_subdiv=10)
-    else:
-        from hedge.mesh import make_cylinder_mesh
-        mesh = make_cylinder_mesh(radius=25*MM, height=50*MM,
-                max_volume=300*MM**3)
+    from pyrticle.geometry import make_cylinder_with_fine_core
+    mesh = make_cylinder_with_fine_core(
+        r=25*MM, inner_r=2.5*MM,
+        min_z=-50*MM, max_z=50*MM,
+        max_volume_inner=10*MM**3,
+        max_volume_outer=100*MM**3,
+        radial_subdiv=10)
 
     xdim = 3
     xdim_align = 4 
@@ -312,11 +299,6 @@ def make_pib(particle_count):
     center = (mesh_min+mesh_max)*0.5
 
     x_particle = 0.03*numpy.random.randn(particle_count, xdim)
-    x_particle[:,0] *= 0.1
-    x_particle[:,1] *= 0.1
-
-    for i in range(xdim):
-        x_particle[:,i] += center[i]
 
     from hedge.backends.jit import Discretization
     discr = Discretization(mesh, order=4)
@@ -332,7 +314,7 @@ def make_pib(particle_count):
         )
 
 def main():
-    print "V45"
+    print "V46"
     print "Making PIB"
     pib = make_pib(10**5)
     print "done"
