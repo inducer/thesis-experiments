@@ -124,7 +124,6 @@ def make_block_data(block_info_records, discr, dtype, threads_per_block):
 
 
 def time_sift(pib):
-    print "V24"
     from hedge.backends.cuda.tools import int_ceiling
 
     threads_per_block = 384     
@@ -187,29 +186,6 @@ def time_sift(pib):
 
     from jinja2 import Template
     sift_tpl = Template("""
-    // shortening and lengthening ---------------------------------------------
-    template <class T>
-    class shorten { };
-
-    template <>
-    struct shorten<float3> 
-    { 
-      typedef float3 target_type;
-      __device__ static target_type call(float4 x)
-      { return make_float3(x.x, x.y, x.z); }
-    };
-
-    template <class T>
-    class lengthen { };
-
-    template <>
-    struct lengthen<float4> 
-    { 
-      typedef float4 target_type;
-      __device__ static target_type call(float3 x)
-      { return make_float4(x.x, x.y, x.z, 0); }
-    };
-
     // defines ----------------------------------------------------------------
 
     #define PARTICLE_LIST_SIZE 1000
@@ -269,22 +245,18 @@ def time_sift(pib):
       }
       __syncthreads();
       
-      unsigned n_particle = threadIdx.x +
-         PARTICLE_CHUNK_NUM*{{ sift_max_particles_per_block }};
+      unsigned n_particle = threadIdx.x;
 
       unsigned blah, blubb;
       for (blah = 0; blah < 20; ++blah)
-      //while(true)
       {
         // sift ---------------------------------------------------------------
         
         for (blubb = 0; blubb < 20; ++blubb)
-        // while (true)
         {
           if (n_particle < block_end_particle)
           {
-            float3 x_particle = shorten<pos_vec>::call(
-              tex1Dfetch(tex_x_particle, n_particle)); 
+            float4 x_particle = tex1Dfetch(tex_x_particle, n_particle); 
 
             int out_of_bbox_indicator =
                 signbit(x_particle.x - bbox_min[0])
@@ -296,11 +268,6 @@ def time_sift(pib):
               ;
             if (!out_of_bbox_indicator)
             {
-              /*
-              unsigned idx_in_list = atomicAdd(
-                (unsigned *) // cast away volatile
-                &intersecting_particle_count, 1);
-                */
               unsigned idx_in_list = intersecting_particle_count++;
               if (idx_in_list < PARTICLE_LIST_SIZE)
               {
@@ -320,11 +287,9 @@ def time_sift(pib):
 
         out_of_particles_thread_count = 0;
         intersecting_particle_count = 0;
-        if (n_particle >= block_end_particle)
         #if 1
+        if (n_particle >= block_end_particle)
           atomicAdd(&out_of_particles_thread_count, 1);
-        #else
-          out_of_particles_thread_count += 1;
         #endif
         if (out_of_particles_thread_count == THREADS_PER_BLOCK)
           break;
@@ -447,6 +412,7 @@ def make_pib(particle_count):
         )
 
 def main():
+    print "V30"
     print "Making PIB"
     pib = make_pib(10**5)
     print "done"
