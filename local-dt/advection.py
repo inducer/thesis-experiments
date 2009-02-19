@@ -20,11 +20,42 @@
 from __future__ import division
 import numpy
 import numpy.linalg as la
+import matplotlib.pyplot as mpl
+
+
+
+
+def build_matrix(f, in_n):
+    in_vec = numpy.zeros(in_n, dtype=numpy.float64)
+    out_n = len(f(in_vec))
+    result = numpy.empty((out_n, in_n), dtype=numpy.float64)
+
+    for i in xrange(in_n):
+        in_vec[i-1] = 0
+        in_vec[i] = 1
+        result[:,i] = f(in_vec)
+
+    return result
+
+
+
+
+def plot_eigenvalues(m, dt, stepper_maker):
+    evalues, evectors = la.eig(m)
+    scatter(evalues.real*dt, evalues.imag*dt)
+    xlabel(r"$\Delta t\, \mathrm{Re}\, \lambda$")
+    ylabel(r"$\Delta t\, \mathrm{Im}\, \lambda$")
+    grid()
+    from stability import plot_stability_region
+    from hedge.timestep import RK4TimeStepper
+    plot_stability_region(RK4TimeStepper, alpha=0.1)
+    show()
 
 
 
 
 class LocalDtTestRig:
+    # setup -------------------------------------------------------------------
     def __init__(self):
         self.make_mesh_1d()
         self.make_operator()
@@ -33,7 +64,7 @@ class LocalDtTestRig:
         self.make_timestepper()
 
     def make_mesh_1d(self):
-        transition_point = 10
+        transition_point = 1
 
         def el_tagger(el, all_vertices):
             if el.centroid(all_vertices)[0] < transition_point:
@@ -49,13 +80,13 @@ class LocalDtTestRig:
 
         eps = 1e-5
 
+        self.points = numpy.hstack((
+                    numpy.arange(0, transition_point, 0.5),
+                    numpy.arange(transition_point, 2+eps, 1),
+                    ))
+
         from hedge.mesh import make_1d_mesh
-        self.mesh = make_1d_mesh(
-                numpy.hstack((
-                    numpy.arange(0, transition_point, 0.1),
-                    numpy.arange(transition_point, 20+eps, 0.2),
-                    )), 
-                periodic=True,
+        self.mesh = make_1d_mesh(self.points, periodic=True,
                 element_tagger=el_tagger)
 
         from hedge.partition import partition_from_tags, partition_mesh
@@ -95,14 +126,15 @@ class LocalDtTestRig:
         self.vis = SiloVisualizer(self.whole_discr)
 
     def make_timestepper(self):
-        large_dt = self.large_discr.dt_factor(self.op.max_eigenvalue())
-        small_dt = self.small_discr.dt_factor(self.op.max_eigenvalue())
+        self.whole_dt = self.whole_discr.dt_factor(self.op.max_eigenvalue())
+        self.large_dt = self.large_discr.dt_factor(self.op.max_eigenvalue())
+        self.small_dt = self.small_discr.dt_factor(self.op.max_eigenvalue())
 
-        assert small_dt >= large_dt/2
+        assert self.small_dt >= self.large_dt/2
 
         from hedge.timestep import TwoRateAdamsBashforthTimeStepper
         self.stepper = TwoRateAdamsBashforthTimeStepper(
-                large_dt=large_dt*0.025, step_ratio=2, 
+                large_dt=self.large_dt, step_ratio=2, 
                 order=1)
 
     def make_rhss(self):
@@ -138,6 +170,8 @@ class LocalDtTestRig:
                 ])
 
         self.reassembled_rhs = reassembled_rhs
+
+    # operations --------------------------------------------------------------
 
     def do_timestep(self):
         dt = self.stepper.large_dt
@@ -184,12 +218,124 @@ class LocalDtTestRig:
 
             u = self.stepper(u, t, self.rhss)
 
+    def build_part_dg_matrices(self):
+        small_n = len(self.small_discr)
+        large_n = len(self.large_discr)
+
+        matrices = numpy.zeros((2,2), dtype=object)
+
+        small_0 = self.small_discr.volume_zeros()
+        large_0 = self.large_discr.volume_zeros()
+
+        matrices[0,0] = build_matrix(
+                lambda y: self.rhss[0](0, y, large_0), 
+                small_n)
+        matrices[0,1] = build_matrix(
+                lambda y: self.rhss[1](0, small_0, y), 
+                large_n)
+        matrices[1,0] = build_matrix(
+                lambda y: self.rhss[2](0, y, large_0), 
+                small_n)
+        matrices[1,1] = build_matrix(
+                lambda y: self.rhss[3](0, small_0, y), 
+                large_n)
+        return matrices
+
+    def build_whole_dg_matrix(self):
+        return build_matrix(lambda y: self.rhs(0, y), len(self.whole_discr))
+
+    def build_part_dg_matrix(self):
+        m = self.build_part_dg_matrices()
+        return numpy.vstack([numpy.hstack(m[i]) for i in range(m.shape[0])])
+
+    def vis_matrix(self, m):
+        n = m.shape[0]
+
+        def get_Np(discr):
+            eg, = discr.element_groups
+            return eg.local_discretization.node_count()
+
+        Np = get_Np(self.small_discr)
+
+        for i in range(0, m.shape[0], get_Np(self.small_discr)):
+            kwargs = dict(color="black", dashes=(3,3))
+            if i == len(self.small_discr):
+                kwargs["linewidth"] = 2
+
+            mpl.axhline(y=i-0.5, **kwargs)
+            mpl.axvline(x=i-0.5, **kwargs)
+
+        mpl.imshow(m, interpolation="nearest")
+        mpl.colorbar()
+
+    def visualize_part_dg_matrix(self):
+        self.vis_matrix(self.build_part_dg_matrix())
+        mpl.show()
+
+    def visualize_whole_dg_matrix(self):
+        self.vis_matrix(self.build_whole_dg_matrix())
+        mpl.show()
+
+    def visualize_diff_dg_matrix(self):
+        mpl.subplot(131)
+        mpl.title("Diff")
+        self.vis_matrix(
+                self.build_whole_dg_matrix()
+                -self.build_part_dg_matrix())
+        mpl.subplot(132)
+        mpl.title("Part")
+        self.vis_matrix(self.build_part_dg_matrix())
+        mpl.subplot(133)
+        mpl.title("Whole")
+        self.vis_matrix(self.build_whole_dg_matrix())
+        mpl.show()
+
+    def plot_whole_dg_eigenvalues(self):
+        from hedge.timestep import RK4TimeStepper
+        plot_eigenvalues(
+                self.build_whole_dg_matrix(),
+                self.whole_dt,
+                RK4TimeStepper)
+
+    def plot_part_dg_eigenvalues(self):
+        from hedge.timestep import RK4TimeStepper
+        plot_eigenvalues(
+                self.build_part_dg_matrix(),
+                self.small_dt,
+                RK4TimeStepper)
+
+    def plot_eigenmodes(self):
+        m = self.build_dg_matrix()
+
+        evalues, evectors = la.eig(m)
+
+        evalue_and_index = list(enumerate(evalues))
+        evalue_and_index.sort(key=lambda (i, ev): -ev.real)
+
+        mpl.scatter(self.points, 0*self.points, label="El.Boundaries")
+
+        for i, evalue in evalue_and_index[:3]:
+            mpl.plot(
+                    self.whole_discr.nodes[:,0], 
+                    evectors[:,i], 
+                    label=str(evalue),
+                    )
+        grid()
+        legend()
+        show()
+
+
 
 
 
 def main() :
     tester = LocalDtTestRig()
-    tester.do_timestep()
+    #tester.do_timestep()
+    #tester.visualize_part_dg_matrix()
+    tester.visualize_diff_dg_matrix()
+    #tester.plot_whole_dg_eigenvalues()
+    #tester.plot_part_dg_eigenvalues()
+    #tester.plot_eigenmodes()
 
 
 

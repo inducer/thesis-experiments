@@ -7,8 +7,6 @@ from cmath import pi
 
 prec = 1e-5
 
-points = []
-
 def is_stable(stepper, k):
     y = 1
     for i in range(20):
@@ -54,26 +52,32 @@ def find_stable_k(stepper_maker, angle):
                 return mag
         return refine(stepper_maker, angle, mag, mag*2)
 
-def make_ab():
-    from hedge.timestep import AdamsBashforthTimeStepper
-    return AdamsBashforthTimeStepper(3)
+def plot_stability_region(stepper_maker, **kwargs):
+    points = []
+    for angle in numpy.arange(0, 2*pi, 2*pi/200):
+        points.append(make_k(angle, find_stable_k(stepper_maker, angle)))
 
-from hedge.timestep import RK4TimeStepper
+    points = numpy.array(points)
 
-sm = RK4TimeStepper
-#sm = make_ab
+    from matplotlib.pyplot import fill
+    fill(points.real, points.imag, **kwargs)
 
-for angle in numpy.arange(0, 2*pi, 2*pi/200):
-    print angle
-    points.append(make_k(angle, find_stable_k(sm, angle)))
+class ABMaker:
+    def __init__(self, order):
+        self.order = order
 
-points = numpy.array(points)
+    def __call__(self):
+        from hedge.timestep import AdamsBashforthTimeStepper
+        return AdamsBashforthTimeStepper(self.order)
 
-from matplotlib.pyplot import *
+if __name__ == "__main__":
+    from hedge.timestep import RK4TimeStepper
 
-title("Stability Region")
-xlabel("Re $k$")
-ylabel("Im $k$")
-fill(points.real, points.imag)
-grid()
-show()
+    sm = RK4TimeStepper
+    #sm = ABMaker(3)
+
+    title("Stability Region")
+    xlabel("Re $k$")
+    ylabel("Im $k$")
+    grid()
+    show()
