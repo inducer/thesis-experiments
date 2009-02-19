@@ -72,10 +72,10 @@ def pml_3d_experiment():
 
     timestamp = get_timestamp()
 
-    pml_mags = [10, 25, 30, 35]
+    pml_mags = [0,1,2,3,4,7]
     for absorb_back in [True, False]:
         for pml_mag in pml_mags:
-            for tau_mag in [0, 0.5, 0.7]:
+            for tau_mag in [0, 1, 1.3, 1.5]:
                 for pml_width in [0.25]:
                     for pml_exp in [2]:
                         for max_vol in [0.03]:
