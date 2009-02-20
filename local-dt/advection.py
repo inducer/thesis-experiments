@@ -42,14 +42,14 @@ def build_matrix(f, in_n):
 
 def plot_eigenvalues(m, dt, stepper_maker):
     evalues, evectors = la.eig(m)
-    scatter(evalues.real*dt, evalues.imag*dt)
-    xlabel(r"$\Delta t\, \mathrm{Re}\, \lambda$")
-    ylabel(r"$\Delta t\, \mathrm{Im}\, \lambda$")
-    grid()
+    mpl.scatter(evalues.real*dt, evalues.imag*dt)
+    mpl.xlabel(r"$\Delta t\, \mathrm{Re}\, \lambda$")
+    mpl.ylabel(r"$\Delta t\, \mathrm{Im}\, \lambda$")
+    mpl.grid()
     from stability import plot_stability_region
     from hedge.timestep import RK4TimeStepper
     plot_stability_region(RK4TimeStepper, alpha=0.1)
-    show()
+    mpl.show()
 
 
 
@@ -61,7 +61,6 @@ class LocalDtTestRig:
         self.make_operator()
         self.make_discretization()
         self.make_rhss()
-        self.make_timestepper()
 
     def make_mesh_1d(self):
         transition_point = 1
@@ -81,8 +80,8 @@ class LocalDtTestRig:
         eps = 1e-5
 
         self.points = numpy.hstack((
-                    numpy.arange(0, transition_point, 0.5),
-                    numpy.arange(transition_point, 2+eps, 1),
+                    numpy.arange(0, transition_point, 0.1),
+                    numpy.arange(transition_point, 2+eps, 0.2),
                     ))
 
         from hedge.mesh import make_1d_mesh
@@ -125,17 +124,9 @@ class LocalDtTestRig:
         from hedge.visualization import SiloVisualizer
         self.vis = SiloVisualizer(self.whole_discr)
 
-    def make_timestepper(self):
         self.whole_dt = self.whole_discr.dt_factor(self.op.max_eigenvalue())
         self.large_dt = self.large_discr.dt_factor(self.op.max_eigenvalue())
         self.small_dt = self.small_discr.dt_factor(self.op.max_eigenvalue())
-
-        assert self.small_dt >= self.large_dt/2
-
-        from hedge.timestep import TwoRateAdamsBashforthTimeStepper
-        self.stepper = TwoRateAdamsBashforthTimeStepper(
-                large_dt=self.large_dt, step_ratio=2, 
-                order=1)
 
     def make_rhss(self):
         self.rhs = self.op.bind(self.whole_discr)
@@ -152,17 +143,18 @@ class LocalDtTestRig:
                 )
 
         def full_rhs_small(t, u_small, u_large): 
-            return small_rhs(t, u_small)
+            return (small_rhs(t, u_small)
+                    + large_to_small_rhs(t, u_small, 0))
         def full_rhs_l2s(t, u_small, u_large): 
-            return large_to_small_rhs(t, u_small, u_large)
+            return large_to_small_rhs(t, 0, u_large)
         def full_rhs_large(t, u_small, u_large): 
-            return large_rhs(t, u_large)
+            return (large_rhs(t, u_large)
+                    + small_to_large_rhs(t, u_large, 0))
         def full_rhs_s2l(t, u_small, u_large):
-            return small_to_large_rhs(t, u_large, u_small)
+            return small_to_large_rhs(t, 0, u_small)
 
         self.rhss = [full_rhs_small, full_rhs_l2s,
                 full_rhs_s2l, full_rhs_large]
-
         def reassembled_rhs(t, u):
             return self.reassemble([
                 full_rhs_small(t, *u)+full_rhs_l2s(t, *u),
@@ -174,11 +166,18 @@ class LocalDtTestRig:
     # operations --------------------------------------------------------------
 
     def do_timestep(self):
-        dt = self.stepper.large_dt
+        assert self.small_dt >= self.large_dt/2
+
+        from hedge.timestep import TwoRateAdamsBashforthTimeStepper
+        stepper = TwoRateAdamsBashforthTimeStepper(
+                large_dt=0.05*self.large_dt, step_ratio=2, 
+                order=1)
+
+        dt = stepper.large_dt
         nsteps = int(700/dt)
 
         print "large dt=%g, small_dt=%g, nsteps=%d" % (
-                self.stepper.large_dt, self.stepper.small_dt, nsteps)
+                stepper.large_dt, stepper.small_dt, nsteps)
 
         from math import sin, cos, pi, sqrt
 
@@ -216,7 +215,7 @@ class LocalDtTestRig:
                     time=t, step=step)
                 visf.close()
 
-            u = self.stepper(u, t, self.rhss)
+            u = stepper(u, t, self.rhss)
 
     def build_part_dg_matrices(self):
         small_n = len(self.small_discr)
@@ -305,14 +304,14 @@ class LocalDtTestRig:
                 RK4TimeStepper)
 
     def plot_eigenmodes(self):
-        m = self.build_dg_matrix()
+        m = self.build_part_dg_matrix()
 
         evalues, evectors = la.eig(m)
 
         evalue_and_index = list(enumerate(evalues))
         evalue_and_index.sort(key=lambda (i, ev): -ev.real)
 
-        mpl.scatter(self.points, 0*self.points, label="El.Boundaries")
+        mpl.scatter(self.points, 0*self.points, label="Element Boundaries")
 
         for i, evalue in evalue_and_index[:3]:
             mpl.plot(
@@ -320,9 +319,32 @@ class LocalDtTestRig:
                     evectors[:,i], 
                     label=str(evalue),
                     )
-        grid()
-        legend()
-        show()
+        mpl.grid()
+        from matplotlib.font_manager import FontProperties
+        mpl.legend(loc="best", prop=FontProperties(size=8))
+        mpl.show()
+
+    def plot_eigenmodes(self):
+        m = self.build_part_dg_matrix()
+
+        evalues, evectors = la.eig(m)
+
+        evalue_and_index = list(enumerate(evalues))
+        evalue_and_index.sort(key=lambda (i, ev): -ev.real)
+
+        mpl.scatter(self.points, 0*self.points, label="Element Boundaries")
+
+        for i, evalue in evalue_and_index[:3]:
+            mpl.plot(
+                    self.whole_discr.nodes[:,0], 
+                    evectors[:,i], 
+                    label=str(evalue),
+                    )
+        mpl.grid()
+        from matplotlib.font_manager import FontProperties
+        mpl.legend(loc="best", prop=FontProperties(size=8))
+        mpl.show()
+
 
 
 
@@ -332,10 +354,10 @@ def main() :
     tester = LocalDtTestRig()
     #tester.do_timestep()
     #tester.visualize_part_dg_matrix()
-    tester.visualize_diff_dg_matrix()
-    #tester.plot_whole_dg_eigenvalues()
+    #tester.visualize_diff_dg_matrix()
     #tester.plot_part_dg_eigenvalues()
     #tester.plot_eigenmodes()
+    tester.do_timestep()
 
 
 
