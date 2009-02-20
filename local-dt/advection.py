@@ -370,7 +370,7 @@ def draw_multirate_spectrum(rig):
                 label=str(dt_fac),
                 )
 
-    evalues, evectors = la.eig(rig.large_dt*build_whole_dg_matrix(rig))
+    evalues, evectors = la.eig(rig.whole_dt*build_whole_dg_matrix(rig))
     mpl.scatter(evalues.real, evalues.imag, 
             marker="+", color="black", label="operator",
             s=5)
@@ -385,7 +385,7 @@ def make_spectrum_animation(rig):
     small_n = len(rig.small_discr)
     whole_n = len(rig.whole_discr)
 
-    op_evalues, op_evectors = la.eig(rig.large_dt*build_whole_dg_matrix(rig))
+    op_evalues, op_evectors = la.eig(rig.whole_dt*build_whole_dg_matrix(rig))
     for i, dt_fac in enumerate(numpy.arange(0.3, 0.6, 0.005)):
         mpl.clf()
         mpl.title(str(dt_fac))
