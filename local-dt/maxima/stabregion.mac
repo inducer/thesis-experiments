@@ -1,0 +1,13 @@
+kill(all);
+load("two-by-two.mac");
+
+ynh: yn + h/2*a*yn + h/2*b*zn;
+ynp: ynh + h/2*a*ynh + h/2*b*zn;
+znp: zn + h*c*yn + h*d*zn;
+
+initial:[yn, zn];
+meth:[ynp, znp];
+
+coeffmat:genmatrix(lambda([i,j], diff(meth[i],initial[j])), 2, 2);
+evs:eigenvalues(coeffmat)[1];
+subevs:ratsubst(Z^2,Zexpr^2,evs);
