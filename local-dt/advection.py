@@ -62,43 +62,11 @@ def plot_eigenvalues_and_stab(m, stepper_maker):
 
 # setup -----------------------------------------------------------------------
 class LocalDtTestRig:
-    def __init__(self):
-        self.make_mesh_1d()
+    def __init__(self, ratio, el_count_small, el_count_large, buffer_count=0):
         self.make_operator()
+        self.make_mesh_1d(ratio, el_count_small, el_count_large, buffer_count)
         self.make_discretization()
         self.make_rhss()
-
-    def make_mesh_1d(self):
-        transition_point = 1
-
-        def el_tagger(el, all_vertices):
-            if el.centroid(all_vertices)[0] < transition_point:
-                return ["small"]
-            else:
-                return ["large"]
-
-        def boundary_tagger(vertices, el, face_nr):
-            if numpy.dot(el.face_normals[face_nr], v) < 0:
-                return ["inflow"]
-            else:
-                return ["outflow"]
-
-        eps = 1e-5
-
-        self.points = numpy.hstack((
-                    numpy.arange(0, transition_point, 0.05),
-                    numpy.arange(transition_point, 2+eps, 0.1),
-                    ))
-
-        from hedge.mesh import make_1d_mesh
-        self.mesh = make_1d_mesh(self.points, periodic=True,
-                element_tagger=el_tagger)
-
-        from hedge.partition import partition_from_tags, partition_mesh
-        self.small_part, self.large_part = partition_mesh(self.mesh, 
-                partition_from_tags(self.mesh, {"large": 1}),
-                part_bdry_tag_factory=lambda opp_part:
-                "from_large" if opp_part == 1 else "from_small")
 
     def make_operator(self):
         self.v = numpy.array([1])
@@ -112,6 +80,49 @@ class LocalDtTestRig:
         self.op = WeakAdvectionOperator(self.v, 
                 flux_type="upwind")
 
+    def make_mesh_1d(self, ratio, el_count_small, el_count_large, buffer_count):
+        el_size_large = 1
+        el_size_small = el_size_large * ratio
+        
+        self.points = [0]
+        for i in range(buffer_count):
+            self.points.append(self.points[-1] + el_size_large)
+        for i in range(el_count_small):
+            self.points.append(self.points[-1] + el_size_small)
+        for i in range(buffer_count):
+            self.points.append(self.points[-1] + el_size_large)
+
+        transition_point = self.points[-1]
+
+        for i in range(el_count_large):
+            self.points.append(self.points[-1] + el_size_large)
+
+        print self.points
+
+        def el_tagger(el, all_vertices):
+            if el.centroid(all_vertices)[0] < transition_point:
+                return ["small"]
+            else:
+                return ["large"]
+
+        def boundary_tagger(vertices, el, face_nr):
+            if numpy.dot(el.face_normals[face_nr], self.v) < 0:
+                return ["inflow"]
+            else:
+                return ["outflow"]
+
+        eps = 1e-5
+
+        from hedge.mesh import make_1d_mesh
+        self.mesh = make_1d_mesh(self.points, periodic=True,
+                element_tagger=el_tagger)
+
+        from hedge.partition import partition_from_tags, partition_mesh
+        self.small_part, self.large_part = partition_mesh(self.mesh, 
+                partition_from_tags(self.mesh, {"large": 1}),
+                part_bdry_tag_factory=lambda opp_part:
+                "from_large" if opp_part == 1 else "from_small")
+
     def make_discretization(self, order=4):
         from hedge.backends.jit import Discretization
         self.small_discr = Discretization(self.small_part.mesh, 
@@ -120,9 +131,8 @@ class LocalDtTestRig:
                 order=order, debug=["node_permutation"])
         self.whole_discr = Discretization(self.mesh, order=order)
 
-        from functools import partial
-        from hedge.partition import reassemble_parts
-        self.reassemble = partial(reassemble_parts,
+        from hedge.partition import Transformer
+        self.xformer = Transformer(
                 self.whole_discr, 
                 [self.small_part, self.large_part],
                 [self.small_discr, self.large_discr])
@@ -162,7 +172,7 @@ class LocalDtTestRig:
         self.rhss = [full_rhs_small, full_rhs_l2s,
                 full_rhs_s2l, full_rhs_large]
         def reassembled_rhs(t, u):
-            return self.reassemble([
+            return self.xformer.reassemble([
                 full_rhs_small(t, *u)+full_rhs_l2s(t, *u),
                 full_rhs_s2l(t, *u)+full_rhs_large(t, *u),
                 ])
@@ -174,7 +184,7 @@ class LocalDtTestRig:
 
 # diagnostics -----------------------------------------------------------------
 def do_timestep(rig):
-    assert rig.small_dt >= rig.large_dt/2
+    assert rig.small_dt >= rig.large_dt/2 - 1e-5
 
     from hedge.timestep import TwoRateAdamsBashforthTimeStepper
     stepper = TwoRateAdamsBashforthTimeStepper(
@@ -189,8 +199,13 @@ def do_timestep(rig):
 
     from math import sin, cos, pi, sqrt
 
+    domain_length = max(rig.points)-min(rig.points)
+    full_waves = max(int(round(domain_length)/2), 1)
+
+    factor = full_waves/domain_length*2*pi
+
     def f(x):
-        return sin(pi*x)
+        return sin(factor*x)
 
     def u_analytic(x, el, t):
         return f((-numpy.dot(rig.v, x)/rig.norm_v+t*rig.norm_v))
@@ -209,7 +224,7 @@ def do_timestep(rig):
         t = step*dt
 
         if step % 10 == 0:
-            whole_u = rig.reassemble(u)
+            whole_u = rig.xformer.reassemble(u)
             u_rhs_real = rig.rhs(t, whole_u)
 
             visf = rig.vis.make_file("fld-%04d" % step)
@@ -386,7 +401,7 @@ def make_spectrum_animation(rig):
     whole_n = len(rig.whole_discr)
 
     op_evalues, op_evectors = la.eig(rig.whole_dt*build_whole_dg_matrix(rig))
-    for i, dt_fac in enumerate(numpy.arange(0.3, 0.6, 0.005)):
+    for i, dt_fac in enumerate(numpy.arange(0.3, 0.9, 0.005)):
         mpl.clf()
         mpl.title(str(dt_fac))
         evalues, evectors = la.eig(build_matrix(
@@ -400,7 +415,7 @@ def make_spectrum_animation(rig):
         mpl.xlabel(r"$\mathrm{Re}\, \lambda$")
         mpl.ylabel(r"$\mathrm{Im}\, \lambda$")
         mpl.grid()
-        mpl.xlim([-2,1])
+        mpl.xlim([-0.2,0.1])
         mpl.ylim([-2,2])
         mpl.savefig("spectrum-%04d.png" % i)
         print i
@@ -408,7 +423,20 @@ def make_spectrum_animation(rig):
 
 
 def main() :
-    rig = LocalDtTestRig()
+    if True:
+        rig = LocalDtTestRig(
+                ratio=0.5,
+                el_count_small=1,
+                el_count_large=3,
+                buffer_count=0,
+                )
+    else:
+        rig = LocalDtTestRig(
+                ratio=0.5,
+                el_count_small=1,
+                el_count_large=1,
+                buffer_count=1,
+                )
     #visualize_part_dg_matrix(rig)
     #visualize_diff_dg_matrix(rig)
     #plot_part_dg_eigenvalues(rig)
