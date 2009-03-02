@@ -62,9 +62,9 @@ def plot_eigenvalues_and_stab(m, stepper_maker):
 
 # setup -----------------------------------------------------------------------
 class LocalDtTestRig:
-    def __init__(self, ratio, el_count_small, el_count_large, buffer_count=0):
+    def __init__(self, el_size_large, el_size_small, el_count_small, el_count_large, buffer_count=0):
         self.make_operator()
-        self.make_mesh_1d(ratio, el_count_small, el_count_large, buffer_count)
+        self.make_mesh_1d(el_size_large, el_size_small, el_count_small, el_count_large, buffer_count)
         self.make_discretization()
         self.make_rhss()
 
@@ -80,10 +80,7 @@ class LocalDtTestRig:
         self.op = WeakAdvectionOperator(self.v, 
                 flux_type="upwind")
 
-    def make_mesh_1d(self, ratio, el_count_small, el_count_large, buffer_count):
-        el_size_large = 1
-        el_size_small = el_size_large * ratio
-        
+    def make_mesh_1d(self, el_size_large, el_size_small, el_count_small, el_count_large, buffer_count):
         self.points = [0]
         for i in range(buffer_count):
             self.points.append(self.points[-1] + el_size_large)
@@ -123,7 +120,7 @@ class LocalDtTestRig:
                 part_bdry_tag_factory=lambda opp_part:
                 "from_large" if opp_part == 1 else "from_small")
 
-    def make_discretization(self, order=4):
+    def make_discretization(self, order=0):
         from hedge.backends.jit import Discretization
         self.small_discr = Discretization(self.small_part.mesh, 
                 order=order, debug=["node_permutation"])
@@ -415,7 +412,8 @@ def make_spectrum_animation(rig):
         mpl.xlabel(r"$\mathrm{Re}\, \lambda$")
         mpl.ylabel(r"$\mathrm{Im}\, \lambda$")
         mpl.grid()
-        mpl.xlim([-0.2,0.1])
+        #mpl.xlim([-0.2,0.1])
+        mpl.xlim([-0.7,0.2])
         mpl.ylim([-2,2])
         mpl.savefig("spectrum-%04d.png" % i)
         print i
@@ -423,20 +421,31 @@ def make_spectrum_animation(rig):
 
 
 def main() :
-    if True:
+    if False:
         rig = LocalDtTestRig(
-                ratio=0.5,
+                el_size_large=1,
+                el_size_small=0.5,
                 el_count_small=1,
                 el_count_large=3,
                 buffer_count=0,
                 )
+    elif True:
+        rig = LocalDtTestRig(
+                el_size_small=0.5,
+                el_count_small=100,
+                el_size_large=1,
+                el_count_large=100,
+                buffer_count=0,
+                )
     else:
         rig = LocalDtTestRig(
-                ratio=0.5,
-                el_count_small=1,
-                el_count_large=1,
-                buffer_count=1,
+                el_size_large=0.01,
+                el_size_small=0.01,
+                el_count_small=100,
+                el_count_large=100,
+                buffer_count=0,
                 )
+
     #visualize_part_dg_matrix(rig)
     #visualize_diff_dg_matrix(rig)
     #plot_part_dg_eigenvalues(rig)
@@ -444,6 +453,8 @@ def main() :
     #do_timestep(rig)
     #draw_multirate_spectrum(rig)
     make_spectrum_animation(rig)
+    #print build_part_dg_matrix(rig)
+    #print build_whole_dg_matrix(rig)
 
 
 
