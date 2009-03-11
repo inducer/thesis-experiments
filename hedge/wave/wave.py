@@ -25,87 +25,73 @@ import numpy.linalg as la
 
 
 def main() :
-    from hedge.element import \
-            IntervalElement, \
-            TriangularElement, \
-            TetrahedralElement
-    from hedge.timestep import RK4TimeStepper, AdamsBashforthTimeStepper
-    from hedge.visualization import SiloVisualizer, VtkVisualizer
+    from hedge.timestep import RK4TimeStepper
     from pytools.stopwatch import Job
     from math import sin, cos, pi, exp, sqrt
-    from hedge.parallel import guess_parallelization_context
 
-    pcon = guess_parallelization_context()
+    from hedge.backends import guess_run_context
+    rcon = guess_run_context(disable=set(["cuda"]))
 
-    dim = 2
+    dim = 3
 
     if dim == 1:
-        if pcon.is_head_rank:
+        if rcon.is_head_rank:
             from hedge.mesh import make_uniform_1d_mesh
             mesh = make_uniform_1d_mesh(-10, 10, 500)
-
-        el_class = IntervalElement
     elif dim == 2:
-        from hedge.mesh import \
-                make_disk_mesh, \
-                make_regular_square_mesh, \
-                make_square_mesh, \
-                make_rect_mesh
-        if pcon.is_head_rank:
-            #mesh = make_disk_mesh(max_area=5e-3)
-            #mesh = make_regular_square_mesh(
-                    #n=9, periodicity=(True,True))
-            mesh = make_rect_mesh(a=(-0.5,-0.5),b=(3.5,0.5),max_area=0.008)
-            #mesh.transform(Rotation(pi/8))
-        el_class = TriangularElement
+        from hedge.mesh import make_rect_mesh
+        if rcon.is_head_rank:
+            mesh = make_rect_mesh(a=(-0.5,-0.5),b=(0.5,0.5),max_area=0.008)
     elif dim == 3:
-        if pcon.is_head_rank:
-            mesh = make_ball_mesh(max_volume=0.0005)
-        el_class = TetrahedralElement
+        if rcon.is_head_rank:
+            from hedge.mesh import make_ball_mesh
+            mesh = make_ball_mesh(max_volume=0.005)
     else:
         raise RuntimeError, "bad number of dimensions"
 
-    if pcon.is_head_rank:
+    if rcon.is_head_rank:
         print "%d elements" % len(mesh.elements)
-        mesh_data = pcon.distribute_mesh(mesh)
+        mesh_data = rcon.distribute_mesh(mesh)
     else:
-        mesh_data = pcon.receive_mesh()
+        mesh_data = rcon.receive_mesh()
 
-    discr = pcon.make_discretization(mesh_data, el_class(7))
+    discr = rcon.make_discretization(mesh_data, order=4)
     stepper = RK4TimeStepper()
-    #stepper = AdamsBashforthTimeStepper(1)
-    vis = VtkVisualizer(discr, pcon, "fld")
-    #vis = SiloVisualizer(discr, pcon)
 
-    def source_u(x):
+    from hedge.visualization import SiloVisualizer, VtkVisualizer
+    #vis = VtkVisualizer(discr, rcon, "fld")
+    vis = SiloVisualizer(discr, rcon)
+
+    def source_u(x, el):
         return exp(-numpy.dot(x, x)*128)
 
     source_u_vec = discr.interpolate_volume_function(source_u)
 
     def source_vec_getter(t):
         from math import sin
-        return source_u_vec*sin(10*t)
+        if t < 1:
+            return source_u_vec*sin(10*t)
+        else:
+            return 0*source_u_vec
 
-    from hedge.operators import StrongWaveOperator
+
+    from hedge.pde import StrongWaveOperator
     from hedge.mesh import TAG_ALL, TAG_NONE
-    op = StrongWaveOperator(-1, discr, 
+    op = StrongWaveOperator(-1, discr.dimensions, 
             source_vec_getter,
-            dirichlet_tag=TAG_ALL,
+            dirichlet_tag=TAG_NONE,
             neumann_tag=TAG_NONE,
-            radiation_tag=TAG_NONE,
+            radiation_tag=TAG_ALL,
             flux_type="upwind",
             )
 
     from hedge.tools import join_fields
     fields = join_fields(discr.volume_zeros(),
             [discr.volume_zeros() for i in range(discr.dimensions)])
-    #fields = join_fields(
-            #discr.interpolate_volume_function(lambda x: sin(x[0])),
-            #[discr.volume_zeros() for i in range(discr.dimensions)]) # v
 
     dt = discr.dt_factor(op.max_eigenvalue())
     nsteps = int(10/dt)
-    if pcon.is_head_rank:
+    if rcon.is_head_rank:
         print "dt", dt
         print "nsteps", nsteps
 
@@ -115,7 +101,7 @@ def main() :
             add_simulation_quantities, \
             add_run_info
 
-    logmgr = LogManager("wave.dat", "w", pcon.communicator)
+    logmgr = LogManager("wave.dat", "w", rcon.communicator)
     add_run_info(logmgr)
     add_general_quantities(logmgr)
     add_simulation_quantities(logmgr, dt)
@@ -134,6 +120,7 @@ def main() :
     logmgr.add_watches(["step.max", "t_sim.max", "l2_u", "t_step.max"])
 
     # timestep loop -----------------------------------------------------------
+    rhs = op.bind(discr)
     for step in range(nsteps):
         logmgr.tick()
 
@@ -146,16 +133,10 @@ def main() :
                     [
                         ("u", fields[0]),
                         ("v", fields[1:]), 
-                        ("n", discr.volumize_boundary_field(
-                            discr.boundary_normals())),
                     ],
                     time=t,
-                    #scale_factor=2e1,
                     step=step)
             visf.close()
-
-        def rhs(t, y):
-            return op.rhs(t, y) - 3*join_fields(fields[0], 0*fields[1:])
 
         fields = stepper(fields, t, dt, rhs)
 
@@ -165,7 +146,5 @@ def main() :
     logmgr.save()
 
 if __name__ == "__main__":
-    #import cProfile as profile
-    #profile.run("main()", "wave2d.prof")
     main()
 
