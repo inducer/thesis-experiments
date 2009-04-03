@@ -26,15 +26,14 @@ from hedge.tools import Reflection, Rotation
 
 
 def main() :
-    from hedge.element import TriangularElement, TetrahedralElement
     from hedge.data import GivenFunction, ConstantGivenFunction
 
     from hedge.backends import guess_run_context
-    rcon = guess_run_context(disable=set(["cuda"]))
+    rcon = guess_run_context()
 
-    dim = 2
+    dim = 3
 
-    def boundary_tagger(fvi, el, fn):
+    def boundary_tagger(fvi, el, fn, points):
         from math import atan2, pi
         normal = el.face_normals[fn]
         if -10/180*pi < atan2(normal[1], normal[0]) < 10/180*pi:
@@ -47,12 +46,11 @@ def main() :
             from hedge.mesh import make_disk_mesh
             mesh = make_disk_mesh(r=0.5, boundary_tagger=boundary_tagger,
                     max_area=1e-2)
-        el_class = TriangularElement
     elif dim == 3:
         if rcon.is_head_rank:
             from hedge.mesh import make_ball_mesh
-            mesh = make_ball_mesh(max_volume=0.0001)
-        el_class = TetrahedralElement
+            mesh = make_ball_mesh(max_volume=0.001,
+                    boundary_tagger=lambda fvi, el, fn, points: ["dirichlet"])
     else:
         raise RuntimeError, "bad number of dimensions"
 
@@ -62,7 +60,9 @@ def main() :
     else:
         mesh_data = rcon.receive_mesh()
 
-    discr = rcon.make_discretization(mesh_data, el_class(5))
+    discr = rcon.make_discretization(mesh_data, order=3,
+            #debug=set(["cuda_no_plan"])
+            )
 
     def dirichlet_bc(x, el):
         from math import sin
@@ -92,14 +92,19 @@ def main() :
     bound_op = op.bind(discr)
 
     from hedge.tools import parallel_cg
-    u = -parallel_cg(rcon, -bound_op, bound_op.prepare_rhs(GivenFunction(rhs_c)), 
-            debug=True, tol=1e-10)
+    u = -parallel_cg(rcon, -bound_op, 
+            bound_op.prepare_rhs(GivenFunction(rhs_c)), 
+            debug=20, tol=1e-10,
+            dot=discr.nodewise_dot_product,
+            x=discr.volume_zeros())
 
     from hedge.visualization import SiloVisualizer, VtkVisualizer
     vis = VtkVisualizer(discr, rcon)
     visf = vis.make_file("fld")
-    vis.add_data(visf, [ ("sol", u), ])
+    vis.add_data(visf, [ ("sol", discr.convert_volume(u, kind="numpy")), ])
     visf.close()
+
+    discr.close()
 
 
 

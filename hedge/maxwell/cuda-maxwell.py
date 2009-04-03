@@ -48,6 +48,8 @@ def main():
 
     from hedge.backends import guess_run_context
 
+    import hedge.mpi as mpi
+
     rcon = guess_run_context()
     cpu_rcon = guess_run_context(disable=set(["cuda"]))
 
@@ -105,17 +107,9 @@ def main():
     from hedge.pde import MaxwellOperator
     op = MaxwellOperator(epsilon, mu, flux_type=1)
 
-    debug_flags = [
-        #"cuda_flux", 
-        #"cuda_debugbuf"
-        #"cuda_lift_plan",
-        #"cuda_diff_plan",
-        #"cuda_gather_plan",
-        #"cuda_dumpkernels",
-        ]
+    debug_flags = [ ]
     if options.debug_flags:
-        for f in options.debug_flags.split(","):
-            debug_flags.append(f)
+        debug_flags.extend(options.debug_flags.split(","))
 
     from hedge.backends.jit import Discretization as CPUDiscretization
     from hedge.backends.cuda import Discretization as GPUDiscretization
