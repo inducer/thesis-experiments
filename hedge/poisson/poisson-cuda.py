@@ -29,7 +29,9 @@ def main() :
     from hedge.data import GivenFunction, ConstantGivenFunction
 
     from hedge.backends import guess_run_context
-    rcon = guess_run_context()
+    rcon = guess_run_context(
+            #disable=set(["cuda"])
+            )
 
     dim = 3
 
@@ -60,7 +62,8 @@ def main() :
     else:
         mesh_data = rcon.receive_mesh()
 
-    discr = rcon.make_discretization(mesh_data, order=3,
+    discr = rcon.make_discretization(mesh_data, order=5,
+            #default_scalar_type=numpy.float32,
             #debug=set(["cuda_no_plan"])
             )
 
@@ -94,7 +97,7 @@ def main() :
     from hedge.tools import parallel_cg
     u = -parallel_cg(rcon, -bound_op, 
             bound_op.prepare_rhs(GivenFunction(rhs_c)), 
-            debug=20, tol=1e-10,
+            debug=20, tol=5e-4,
             dot=discr.nodewise_dot_product,
             x=discr.volume_zeros())
 

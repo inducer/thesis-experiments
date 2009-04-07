@@ -167,13 +167,13 @@ def main():
     if isinstance(discr, CPUDiscretization):
         logmgr.add_watches(["step.max", "t_sim.max", "t_step.max",
             ("flops/s", "(n_flops_gather+n_flops_lift+n_flops_mass+n_flops_diff)"
-            "/(t_gather+t_lift+t_mass+t_diff)")
+            "/(t_gather+t_el_local+t_diff)")
             ])
     else:
         logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
-            ("t_compute", "t_diff.max+t_gather.max+t_lift.max+t_rk4.max+t_vector_math.max"),
+            ("t_compute", "t_diff.max+t_gather.max+t_el_local.max+t_rk4.max+t_vector_math.max"),
             ("flops/s", "(n_flops_gather.sum+n_flops_lift.sum+n_flops_mass.sum+n_flops_diff.sum+n_flops_vector_math.sum+n_flops_rk4.sum)"
-            "/(t_gather.max+t_lift.max+t_mass.max+t_diff.max+t_vector_math.max+t_rk4.max)")
+            "/(t_gather.max+t_el_local.max+t_diff.max+t_vector_math.max+t_rk4.max)")
             ])
 
     logmgr.set_constant("h", options.h)
