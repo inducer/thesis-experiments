@@ -116,8 +116,6 @@ def main():
     if options.cpu:
         discr = cpu_rcon.make_discretization(mesh_data, order=options.order, debug=debug_flags,
                 default_scalar_type=numpy.float32 if options.single else numpy.float64)
-
-        cpu_discr = discr
     else:
         from pycuda.driver import device_attribute
         discr = rcon.make_discretization(mesh_data, order=options.order, debug=debug_flags,
@@ -125,8 +123,6 @@ def main():
                 mpi_cuda_dev_filter=lambda dev: 
                 dev.get_attribute(device_attribute.MULTIPROCESSOR_COUNT) > 2
                 )
-
-        cpu_discr = cpu_rcon.make_discretization(mesh_data, order=options.order)
 
     if options.vis_interval:
         #vis = VtkVisualizer(discr, rcon, "em-%d" % options.order)
@@ -227,15 +223,14 @@ def main():
     mode.set_time(boxed_t[0])
 
     from hedge.tools import relative_error
-    true_fields = to_obj_array(mode(cpu_discr).real.copy())
+    true_fields = discr.convert_volume(to_obj_array(mode(discr)
+        .real.astype(discr.default_scalar_type)), kind=discr.compute_kind)
 
     total_diff = 0
     total_true = 0
-    for i, (f, cpu_tf) in enumerate(zip(fields, true_fields)):
-        cpu_f = discr.convert_volume(f, kind="numpy")
-
-        l2_diff = cpu_discr.norm(cpu_f-cpu_tf) 
-        l2_true = cpu_discr.norm(cpu_tf)
+    for i, (f, tf) in enumerate(zip(fields, true_fields)):
+        l2_diff = discr.norm(f-tf) 
+        l2_true = discr.norm(tf)
 
         total_diff += l2_diff**2
         total_true += l2_true**2

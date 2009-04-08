@@ -62,7 +62,7 @@ def main() :
     else:
         mesh_data = rcon.receive_mesh()
 
-    discr = rcon.make_discretization(mesh_data, order=5,
+    discr = rcon.make_discretization(mesh_data, order=4,
             #default_scalar_type=numpy.float32,
             #debug=set(["cuda_no_plan"])
             )
@@ -97,7 +97,7 @@ def main() :
     from hedge.tools import parallel_cg
     u = -parallel_cg(rcon, -bound_op, 
             bound_op.prepare_rhs(GivenFunction(rhs_c)), 
-            debug=20, tol=5e-4,
+            debug=20, tol=1e-3,
             dot=discr.nodewise_dot_product,
             x=discr.volume_zeros())
 

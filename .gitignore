@@ -34,7 +34,7 @@ out
 el_faces.txt
 diff.cu
 flux_gather.cu
-flux_lift.cu
+cuda_lift.cu
 *.conf
 *.pdf
 tmp
