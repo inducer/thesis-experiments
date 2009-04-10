@@ -35,6 +35,7 @@ el_faces.txt
 diff.cu
 flux_gather.cu
 cuda_lift.cu
+cuda_el_local.cu
 *.conf
 *.pdf
 tmp

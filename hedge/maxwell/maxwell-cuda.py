@@ -119,6 +119,7 @@ def main():
     else:
         from pycuda.driver import device_attribute
         discr = rcon.make_discretization(mesh_data, order=options.order, debug=debug_flags,
+                default_scalar_type=numpy.float64,
                 tune_for=op.op_template(),
                 mpi_cuda_dev_filter=lambda dev: 
                 dev.get_attribute(device_attribute.MULTIPROCESSOR_COUNT) > 2
@@ -197,6 +198,14 @@ def main():
 
             boxed_fields[0] = stepper(boxed_fields[0], boxed_t[0], dt, rhs)
             boxed_t[0] += dt
+
+            for i, f in enumerate(boxed_fields[0]):
+                import pycuda.gpuarray as gpuarray
+                print i, la.norm(discr.convert_volume(f, \
+                    kind="numpy")), discr.norm(f), \
+                    discr.nodewise_dot_product(f, f)
+
+
 
     if options.profile:
         from cProfile import Profile
