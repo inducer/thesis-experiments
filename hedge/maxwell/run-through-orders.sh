@@ -15,5 +15,5 @@ for o in `seq 1 9`; do
       HOPT="--h=0.075"
     fi
   fi
-  python $ROOT/cuda-maxwell.py --order=$o $HOPT "$@"
+  python $ROOT/maxwell-cuda.py --order=$o $HOPT "$@"
 done

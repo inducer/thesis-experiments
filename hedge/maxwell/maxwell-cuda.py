@@ -119,11 +119,10 @@ def main():
     else:
         from pycuda.driver import device_attribute
         discr = rcon.make_discretization(mesh_data, order=options.order, debug=debug_flags,
-                default_scalar_type=numpy.float64,
+                default_scalar_type=numpy.float32 if options.single else numpy.float64,
                 tune_for=op.op_template(),
                 mpi_cuda_dev_filter=lambda dev: 
-                dev.get_attribute(device_attribute.MULTIPROCESSOR_COUNT) > 2
-                )
+                dev.get_attribute(device_attribute.MULTIPROCESSOR_COUNT) > 2)
 
     if options.vis_interval:
         #vis = VtkVisualizer(discr, rcon, "em-%d" % options.order)
@@ -199,13 +198,7 @@ def main():
             boxed_fields[0] = stepper(boxed_fields[0], boxed_t[0], dt, rhs)
             boxed_t[0] += dt
 
-            for i, f in enumerate(boxed_fields[0]):
-                import pycuda.gpuarray as gpuarray
-                print i, la.norm(discr.convert_volume(f, \
-                    kind="numpy")), discr.norm(f), \
-                    discr.nodewise_dot_product(f, f)
-
-
+            print discr.norm(boxed_fields[0])
 
     if options.profile:
         from cProfile import Profile
@@ -235,16 +228,10 @@ def main():
     true_fields = discr.convert_volume(to_obj_array(mode(discr)
         .real.astype(discr.default_scalar_type)), kind=discr.compute_kind)
 
-    total_diff = 0
-    total_true = 0
-    for i, (f, tf) in enumerate(zip(fields, true_fields)):
-        l2_diff = discr.norm(f-tf) 
-        l2_true = discr.norm(tf)
+    l2_diff = discr.norm(fields-true_fields) 
+    l2_true = discr.norm(true_fields)
+    relerr = relative_error(l2_diff, l2_true)
 
-        total_diff += l2_diff**2
-        total_true += l2_true**2
-
-    relerr = relative_error(total_diff**0.5, total_true**0.5)
     logmgr.set_constant("relerr", relerr)
     logmgr.close()
 
