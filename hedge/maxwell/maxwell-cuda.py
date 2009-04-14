@@ -87,7 +87,7 @@ def main():
         periodicity = (False, False, True)
     else:
         periodicity = None
-    mode = RectangularCavityMode(epsilon, mu, (4,3,3))
+    mode = RectangularCavityMode(epsilon, mu, (1,1,1))
 
     if rcon.is_head_rank:
         mesh = make_box_mesh(max_volume=options.h**3/6, periodicity=periodicity)
@@ -163,7 +163,7 @@ def main():
     if isinstance(discr, CPUDiscretization):
         logmgr.add_watches(["step.max", "t_sim.max", "t_step.max",
             ("flops/s", "(n_flops_gather+n_flops_lift+n_flops_mass+n_flops_diff)"
-            "/(t_gather+t_el_local+t_diff)")
+            "/(t_gather+t_lift+t_diff)")
             ])
     else:
         logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
@@ -197,8 +197,6 @@ def main():
 
             boxed_fields[0] = stepper(boxed_fields[0], boxed_t[0], dt, rhs)
             boxed_t[0] += dt
-
-            print discr.norm(boxed_fields[0])
 
     if options.profile:
         from cProfile import Profile

@@ -27,15 +27,21 @@ from pytools import memoize_method
 
 
 def main() :
-    from hedge.timestep import RK4TimeStepper
-    from hedge.visualization import SiloVisualizer, VtkVisualizer
-    from hedge.tools import mem_checkpoint
-    from pytools.stopwatch import Job
     from math import sin, cos, pi, sqrt
-    from hedge.parallel import \
-            guess_parallelization_context, \
-            reassemble_volume_field
     from math import floor
+
+    from optparse import OptionParser
+    parser = OptionParser()
+    parser.add_option("--single", action="store_true")
+    parser.add_option("--order", default=4, type="int")
+    parser.add_option("--max-volume", default=0.08, type="float")
+    parser.add_option("--final-time", default=700, type="float")
+    parser.add_option("--vis-interval", default=0, type="int")
+    #parser.add_option("--steps", type="int")
+    #parser.add_option("--cpu", action="store_true")
+    parser.add_option("-d", "--debug-flags", metavar="DEBUG_FLAG,DEBUG_FLAG")
+    options, args = parser.parse_args()
+    assert not args
 
     def f(x):
         return sin(pi*x)
@@ -47,25 +53,25 @@ def main() :
     def u_analytic(x, t):
         return f((-v*x/norm_v+t*norm_v))
 
-    def boundary_tagger(vertices, el, face_nr):
+    def boundary_tagger(vertices, el, face_nr, points):
         if numpy.dot(el.face_normals[face_nr], v) < 0:
             return ["inflow"]
         else:
             return ["outflow"]
 
-    pcon = guess_parallelization_context()
+    from hedge.backends import guess_run_context
+    rcon = guess_run_context()
 
     dim = 3
 
-    job = Job("mesh")
     if dim == 1:
         v = numpy.array([1])
-        if pcon.is_head_rank:
+        if rcon.is_head_rank:
             from hedge.mesh import make_uniform_1d_mesh
             mesh = make_uniform_1d_mesh(-2, 5, 10, periodic=True)
     elif dim == 2:
         v = numpy.array([2,0])
-        if pcon.is_head_rank:
+        if rcon.is_head_rank:
             from hedge.mesh import \
                     make_disk_mesh, \
                     make_square_mesh, \
@@ -99,13 +105,14 @@ def main() :
                         )
     elif dim == 3:
         v = numpy.array([0,0,0.3])
-        if pcon.is_head_rank:
+        if rcon.is_head_rank:
             from hedge.mesh import make_cylinder_mesh, make_ball_mesh, make_box_mesh
 
-            mesh = make_cylinder_mesh(max_volume=0.0005, boundary_tagger=boundary_tagger,
-                    periodic=False, radial_subdivisions=32)
-            #mesh = make_box_mesh(dimensions=(1,1,2*pi/3), max_volume=0.01,
-                    #boundary_tagger=boundary_tagger)
+            #mesh = make_cylinder_mesh(max_volume=options.h, boundary_tagger=boundary_tagger,
+                    #periodic=False, radial_subdivisions=32)
+            mesh = make_box_mesh(a=(-1,-1,-1), b=(1,1,1), 
+                    max_volume=options.max_volume,
+                    boundary_tagger=boundary_tagger)
             #mesh = make_box_mesh(max_volume=0.01, boundary_tagger=boundary_tagger)
             #mesh = make_ball_mesh(boundary_tagger=boundary_tagger)
             #mesh = make_cylinder_mesh(max_volume=0.01, boundary_tagger=boundary_tagger)
@@ -114,34 +121,36 @@ def main() :
 
     norm_v = la.norm(v)
 
-    if pcon.is_head_rank:
-        mesh_data = pcon.distribute_mesh(mesh)
+    if rcon.is_head_rank:
+        mesh_data = rcon.distribute_mesh(mesh)
     else:
-        mesh_data = pcon.receive_mesh()
-    job.done()
+        mesh_data = rcon.receive_mesh()
 
-    job = Job("discretization")
-    #mesh_data = mesh_data.reordered_by("cuthill")
-    from hedge.cuda import Discretization
-    #from hedge.discr_precompiled import Discretization
-    discr = pcon.make_discretization(mesh_data, order=4, 
-            discr_class=Discretization, #debug=True
-            device=1
-            )
-    job.done()
-
-    vis = SiloVisualizer(discr, pcon)
-
-    # operator setup ----------------------------------------------------------
     from hedge.data import \
             ConstantGivenFunction, \
             TimeConstantGivenFunction, \
             TimeDependentGivenFunction
     from hedge.pde import StrongAdvectionOperator
-    op = StrongAdvectionOperator(discr, v, 
+    op = StrongAdvectionOperator(v, 
             inflow_u=TimeConstantGivenFunction(ConstantGivenFunction()),
             #inflow_u=TimeDependentGivenFunction(u_analytic)),
             flux_type="upwind")
+
+    debug_flags = [ ]
+    if options.debug_flags:
+        debug_flags.extend(options.debug_flags.split(","))
+
+    #mesh_data = mesh_data.reordered_by("cuthill")
+    discr = rcon.make_discretization(mesh_data, order=options.order, 
+            tune_for=op.op_template(),
+            debug=debug_flags,
+            default_scalar_type=numpy.float32 if options.single else numpy.float64,
+            )
+
+    from hedge.visualization import SiloVisualizer, VtkVisualizer
+    vis = SiloVisualizer(discr, rcon)
+
+    # operator setup ----------------------------------------------------------
 
     #from pyrticle._internal import ShapeFunction
     #sf = ShapeFunction(1, 2, alpha=1)
@@ -172,12 +181,14 @@ def main() :
     #u = discr.interpolate_volume_function(wild_trig)
 
     # timestep setup ----------------------------------------------------------
+    from hedge.backends.cuda.tools import RK4TimeStepper
+    #from hedge.timestep import RK4TimeStepper
     stepper = RK4TimeStepper()
 
     dt = discr.dt_factor(op.max_eigenvalue())
-    nsteps = int(700/dt)
+    nsteps = int(options.final_time/dt)
 
-    if pcon.is_head_rank:
+    if rcon.is_head_rank:
         print "%d elements, dt=%g, nsteps=%d" % (
                 len(discr.mesh.elements),
                 dt,
@@ -189,7 +200,7 @@ def main() :
             add_simulation_quantities, \
             add_run_info
 
-    logmgr = LogManager("advection.dat", "w", pcon.communicator)
+    logmgr = LogManager("advection.dat", "w", rcon.communicator)
     add_run_info(logmgr)
     add_general_quantities(logmgr)
     add_simulation_quantities(logmgr, dt)
@@ -206,23 +217,24 @@ def main() :
     #logmgr.add_quantity(LpNorm(u_getter, discr, p=1, name="l1_u"))
     #logmgr.add_quantity(LpNorm(u_getter, discr, name="l2_u"))
 
-    logmgr.add_watches(["step", "t_sim", "t_step", "t_diff_op+t_inner_flux",
-        "n_flops/(t_diff_op+t_inner_flux)"
+    logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
+        ("t_compute", "t_diff.max+t_gather.max+t_el_local.max+t_rk4.max+t_vector_math.max"),
+        ("flops/s", "(n_flops_gather.sum+n_flops_lift.sum+n_flops_mass.sum+n_flops_diff.sum+n_flops_vector_math.sum+n_flops_rk4.sum)"
+        "/(t_gather.max+t_el_local.max+t_diff.max+t_vector_math.max+t_rk4.max)")
         ])
 
     # timestep loop -----------------------------------------------------------
+    rhs = op.bind(discr)
+
     for step in xrange(nsteps):
+
         logmgr.tick()
         t = step*dt
 
-        if step % 100 == 0:
-            if hasattr(discr, "volume_from_gpu"):
-                get_vec = discr.volume_from_gpu
-            else:
-                get_vec = lambda x: x
+        if options.vis_interval and step % options.vis_interval == 0:
             visf = vis.make_file("fld-%04d" % step)
             vis.add_data(visf, [
-                        ("u", get_vec(u)), 
+                        ("u", discr.convert_volume(u, kind="numpy")), 
                         #("u", u), 
                         #("u_true", u_true), 
                         ], 
@@ -232,9 +244,13 @@ def main() :
                         )
             visf.close()
 
-        u = stepper(u, t, dt, op.rhs)
+        u = stepper(u, t, dt, rhs)
+
+        print discr.norm(u)
 
     vis.close()
+
+    discr.close()
 
 
 
