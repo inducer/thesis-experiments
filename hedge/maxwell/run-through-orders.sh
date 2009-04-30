@@ -6,13 +6,23 @@ ROOT=`dirname "$0"`
 if test "$1" = "--adapt-h"; then
   ADAPT_H=1
   shift
+  if test "$1" == "--single"; then
+    COARSE_H=0.10
+    FINE_H=0.075
+    SWITCH_ORDER=8
+  else
+    COARSE_H=0.12
+    FINE_H=0.085
+    SWITCH_ORDER=7
+  fi
 fi
+
 for o in `seq 1 9`; do 
   if test "$ADAPT_H" != ""; then
-    if test $o -ge 8; then
-      HOPT="--h=0.10"
+    if test $o -ge $SWITCH_ORDER; then
+      HOPT="--h=$COARSE_H"
     else
-      HOPT="--h=0.075"
+      HOPT="--h=$FINE_H"
     fi
   fi
   python $ROOT/maxwell-cuda.py --order=$o $HOPT "$@"
