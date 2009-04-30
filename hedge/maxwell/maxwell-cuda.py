@@ -25,9 +25,26 @@ import numpy.linalg as la
 
 
 def main():
-    #import os, mpiboost
-    #os.environ["CUDA_PROFILE"] = "1"
-    #os.environ["CUDA_PROFILE_LOG"] = "cuda_profile_%d.log" % mpiboost.rank
+    from optparse import OptionParser
+    parser = OptionParser()
+    parser.add_option("--single", action="store_true")
+    parser.add_option("--order", default=4, type="int")
+    parser.add_option("--h", default=0.08, type="float")
+    parser.add_option("--final-time", default=4e-10, type="float")
+    parser.add_option("--vis-interval", default=0, type="int")
+    parser.add_option("--profile", action="store_true")
+    parser.add_option("--profile-cuda", action="store_true")
+    parser.add_option("--steps", type="int")
+    parser.add_option("--cpu", action="store_true")
+    parser.add_option("-d", "--debug-flags", metavar="DEBUG_FLAG,DEBUG_FLAG")
+    parser.add_option("--log-file", default="maxwell-%(order)s.dat")
+    options, args = parser.parse_args()
+    assert not args
+
+    if options.profile_cuda:
+        import os, hedge.mpi
+        os.environ["CUDA_PROFILE"] = "1"
+        os.environ["CUDA_PROFILE_LOG"] = "cuda_profile_%d.log" % hedge.mpi.rank
 
     from hedge.element import TetrahedralElement
     from hedge.mesh import make_ball_mesh, make_cylinder_mesh, make_box_mesh
@@ -61,21 +78,6 @@ def main():
     eoc_rec = EOCRecorder()
 
     periodic = False
-
-    from optparse import OptionParser
-    parser = OptionParser()
-    parser.add_option("--single", action="store_true")
-    parser.add_option("--order", default=4, type="int")
-    parser.add_option("--h", default=0.08, type="float")
-    parser.add_option("--final-time", default=4e-10, type="float")
-    parser.add_option("--vis-interval", default=0, type="int")
-    parser.add_option("--profile", action="store_true")
-    parser.add_option("--steps", type="int")
-    parser.add_option("--cpu", action="store_true")
-    parser.add_option("-d", "--debug-flags", metavar="DEBUG_FLAG,DEBUG_FLAG")
-    parser.add_option("--log-file", default="maxwell-%(order)s.dat")
-    options, args = parser.parse_args()
-    assert not args
 
     if rcon.is_head_rank:
         print "----------------------------------------------------------------"
@@ -169,7 +171,9 @@ def main():
         logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
             ("t_compute", "t_diff.max+t_gather.max+t_el_local.max+t_rk4.max+t_vector_math.max"),
             ("flops/s", "(n_flops_gather.sum+n_flops_lift.sum+n_flops_mass.sum+n_flops_diff.sum+n_flops_vector_math.sum+n_flops_rk4.sum)"
-            "/(t_gather.max+t_el_local.max+t_diff.max+t_vector_math.max+t_rk4.max)")
+            #"/(t_gather.max+t_el_local.max+t_diff.max+t_vector_math.max+t_rk4.max)"
+            "/t_step.max"
+            )
             ])
 
     logmgr.set_constant("h", options.h)

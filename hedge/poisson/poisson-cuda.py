@@ -51,7 +51,7 @@ def main() :
     elif dim == 3:
         if rcon.is_head_rank:
             from hedge.mesh import make_ball_mesh
-            mesh = make_ball_mesh(max_volume=0.001,
+            mesh = make_ball_mesh(max_volume=0.0005,
                     boundary_tagger=lambda fvi, el, fn, points: ["dirichlet"])
     else:
         raise RuntimeError, "bad number of dimensions"
@@ -61,11 +61,6 @@ def main() :
         mesh_data = rcon.distribute_mesh(mesh)
     else:
         mesh_data = rcon.receive_mesh()
-
-    discr = rcon.make_discretization(mesh_data, order=4,
-            #default_scalar_type=numpy.float32,
-            #debug=set(["cuda_no_plan"])
-            )
 
     def dirichlet_bc(x, el):
         from math import sin
@@ -83,7 +78,7 @@ def main() :
         return result
 
     from hedge.pde import WeakPoissonOperator
-    op = WeakPoissonOperator(discr.dimensions, 
+    op = WeakPoissonOperator(dim, 
             diffusion_tensor=ConstantGivenFunction(my_diff_tensor()),
 
             dirichlet_tag="dirichlet",
@@ -92,14 +87,24 @@ def main() :
             dirichlet_bc=GivenFunction(dirichlet_bc),
             neumann_bc=ConstantGivenFunction(-10),
             )
+
+    discr = rcon.make_discretization(mesh_data, order=5,
+            default_scalar_type=numpy.float64,
+            #debug=set(["cuda_no_plan"]),
+            tune_for=op.grad_op_template(),
+            )
+
     bound_op = op.bind(discr)
 
     from hedge.tools import parallel_cg
+    from time import time
+    start = time()
     u = -parallel_cg(rcon, -bound_op, 
             bound_op.prepare_rhs(GivenFunction(rhs_c)), 
-            debug=20, tol=1e-3,
+            debug=20, tol=1e-10,
             dot=discr.nodewise_dot_product,
             x=discr.volume_zeros())
+    print "%g secs" % (time()-start)
 
     from hedge.visualization import SiloVisualizer, VtkVisualizer
     vis = VtkVisualizer(discr, rcon)
