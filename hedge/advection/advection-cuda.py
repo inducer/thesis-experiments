@@ -62,7 +62,7 @@ def main() :
     from hedge.backends import guess_run_context
     rcon = guess_run_context()
 
-    dim = 3
+    dim = 2
 
     if dim == 1:
         v = numpy.array([1])
@@ -245,8 +245,6 @@ def main() :
             visf.close()
 
         u = stepper(u, t, dt, rhs)
-
-        print discr.norm(u)
 
     vis.close()
 

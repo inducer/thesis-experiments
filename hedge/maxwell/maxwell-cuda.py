@@ -36,6 +36,7 @@ def main():
     parser.add_option("--profile-cuda", action="store_true")
     parser.add_option("--steps", type="int")
     parser.add_option("--cpu", action="store_true")
+    parser.add_option("--local-watches", action="store_true")
     parser.add_option("-d", "--debug-flags", metavar="DEBUG_FLAG,DEBUG_FLAG")
     parser.add_option("--log-file", default="maxwell-%(order)s.dat")
     options, args = parser.parse_args()
@@ -55,8 +56,9 @@ def main():
     from hedge.tools import EOCRecorder, to_obj_array
     from math import sqrt, pi
 
+    from os.path import dirname, join
     import sys
-    sys.path.append("../../../hedge/examples/maxwell")
+    sys.path.append(join(dirname(sys.argv[0]), "../../../hedge/examples/maxwell"))
     from analytic_solutions import \
             RealPartAdapter, \
             SplitComplexAdapter, \
@@ -154,7 +156,7 @@ def main():
     add_simulation_quantities(logmgr, dt)
     discr.add_instrumentation(logmgr)
 
-    if isinstance(discr, CPUDiscretization):
+    if options.cpu:
         from hedge.timestep import RK4TimeStepper
     else:
         from hedge.backends.cuda.tools import RK4TimeStepper
@@ -162,19 +164,30 @@ def main():
     stepper = RK4TimeStepper()
     stepper.add_instrumentation(logmgr)
 
-    if isinstance(discr, CPUDiscretization):
-        logmgr.add_watches(["step.max", "t_sim.max", "t_step.max",
-            ("flops/s", "(n_flops_gather+n_flops_lift+n_flops_mass+n_flops_diff)"
-            "/(t_gather+t_lift+t_diff)")
-            ])
+    logmgr.add_watches(["step.loc", "t_sim.loc", "t_step.loc"])
+    if options.cpu:
+        if not options.local_watches:
+            logmgr.add_watches([
+                ("flops/s", "(n_flops_gather.sum+n_flops_lift.sum+n_flops_mass.sum+n_flops_diff.sum)"
+                #"/(t_gather+t_lift+t_diff)"
+                "/t_step.max"
+                )
+                ])
     else:
-        logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
+        if options.local_watches:
+            logmgr.add_watches([
+                ("t_compute", 
+                    "t_diff.loc+t_gather.loc+t_el_local.loc+t_rk4.loc+t_vector_math.loc"),
+                ])
+        else:
+            logmgr.add_watches([
             ("t_compute", "t_diff.max+t_gather.max+t_el_local.max+t_rk4.max+t_vector_math.max"),
             ("flops/s", "(n_flops_gather.sum+n_flops_lift.sum+n_flops_mass.sum+n_flops_diff.sum+n_flops_vector_math.sum+n_flops_rk4.sum)"
             #"/(t_gather.max+t_el_local.max+t_diff.max+t_vector_math.max+t_rk4.max)"
             "/t_step.max"
             )
             ])
+    print logmgr.have_nonlocal_watches
 
     logmgr.set_constant("h", options.h)
     logmgr.set_constant("is_cpu", options.cpu)

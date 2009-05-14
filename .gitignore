@@ -41,3 +41,6 @@ cuda_el_local.cu
 tmp
 hostfile
 *.linkinfo
+*.dot
+*.out.*
+*.dat-rank*
