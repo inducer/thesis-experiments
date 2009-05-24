@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 
 // defines ----------------------------------------------------------------
 
@@ -31,22 +32,36 @@ extern "C" __global__ void sift()
 
     }
 
-    oop = 0;
-    #if 1
+    if (threadIdx.x==0)
+      atomicAnd(&oop, 0);
+    __syncthreads();
     if (n_pt >= bep)
       atomicAdd(&oop, 1);
-    #endif
+    __syncthreads();
     if (oop == THREADS_PER_BLOCK)
       break;
   }
 }
 
-int main()
+int main(int argc, char **argv)
 {
-  puts("V69\n");
-  dim3 grid(4098,100);
+  int dev = 0;
+  if (argc == 2)
+    dev = atoi(argv[1]);
+
+  printf("using device %d\n", dev);
+  cudaSetDevice(dev);
+
+  puts("V72\n");
+  dim3 grid(100,100);
   dim3 block(384,1);
-  sift<<<grid,block>>>();
-  cudaError e = cudaThreadSynchronize();
-  printf("ret: %d\n", e);
+  for (int i = 0; i < 40; ++i)
+  {
+    printf("loop %d\n", i);
+    sift<<<grid,block>>>();
+    cudaError e = cudaThreadSynchronize();
+    if (e)
+      printf("ret: %d\n", e);
+  }
+  puts("done\n");
 }

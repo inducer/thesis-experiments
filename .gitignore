@@ -44,3 +44,5 @@ hostfile
 *.dot
 *.out.*
 *.dat-rank*
+flux_lift.cu
+a.out

@@ -193,7 +193,8 @@ def main():
     parser.add_option("--vis-interval", default=0, type="int")
     parser.add_option("--steps", type="int")
     parser.add_option("--cpu", action="store_true")
-    parser.add_option("--pml_factor", default=0.05, type="float")
+    parser.add_option("--pml-factor", default=0.05, type="float")
+    parser.add_option("--write-neu", metavar="NEU-FILE")
     parser.add_option("--swizzle", metavar="FROM:TO,FROM:TO")
     parser.add_option("-d", "--debug-flags", metavar="DEBUG_FLAG,DEBUG_FLAG")
     parser.add_option("--log-file", default="maxwell-%(order)s.dat")
@@ -237,11 +238,15 @@ def main():
         mi.set_holes([geob.center()])
         built_mi = build(mi, max_volume=options.h**3/6)
 
+        if options.write_neu:
+            built_mi.write_neu(open(options.write_neu, "w"),
+                    bc={ 1:("scatterer", 1), 0:("absorber", 2) })
+
         print "%d elements" % len(built_mi.elements)
 
         fvi2fm = built_mi.face_vertex_indices_to_face_marker
 
-        def boundary_tagger(fvi, el, fn):
+        def boundary_tagger(fvi, el, fn, points):
             face_marker = fvi2fm[frozenset(fvi)]
             if face_marker == 1:
                 return ["scatterer"]

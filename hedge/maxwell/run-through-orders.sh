@@ -17,7 +17,7 @@ if test "$1" = "--adapt-h"; then
   fi
 fi
 
-for o in `seq 1 9`; do 
+for o in `seq 6 9`; do 
   if test "$ADAPT_H" != ""; then
     if test $o -ge $SWITCH_ORDER; then
       HOPT="--h=$COARSE_H"

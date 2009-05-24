@@ -3,6 +3,7 @@ import numpy
 import numpy.linalg as la
 import pycuda.driver as cuda
 import pycuda.gpuarray as gpuarray
+from pycuda.compiler import SourceModule
 import pycuda.tools
 from pytools import Record
 
@@ -277,13 +278,11 @@ def time_sift(pib):
          PARTICLE_CHUNK_NUM*{{ sift_max_particles_per_block }};
 
       unsigned blah, blubb;
-      for (blah = 0; blah < 20; ++blah)
-      //while(true)
+      while(true)
       {
         // sift ---------------------------------------------------------------
         
-        for (blubb = 0; blubb < 20; ++blubb)
-        // while (true)
+        while (true)
         {
           if (n_particle < block_end_particle)
           {
@@ -300,12 +299,9 @@ def time_sift(pib):
               ;
             if (!out_of_bbox_indicator)
             {
-              /*
               unsigned idx_in_list = atomicAdd(
                 (unsigned *) // cast away volatile
                 &intersecting_particle_count, 1);
-                */
-              unsigned idx_in_list = intersecting_particle_count++;
               if (idx_in_list < PARTICLE_LIST_SIZE)
               {
                 intersecting_particles[idx_in_list] = n_particle;
@@ -321,10 +317,9 @@ def time_sift(pib):
           if (intersecting_particle_count >= PARTICLE_LIST_SIZE)
             break;
         }
-        //__syncthreads();
+        __syncthreads();
 
         // add up intersecting_particles --------------------------------------
-        #if 0
         if (threadIdx.x < BLOCK_END-BLOCK_START)
         {
           pos_vec x_node = shorten<pos_vec>::call(
@@ -369,24 +364,26 @@ def time_sift(pib):
             }
           }
         }
-        #endif
 
-        out_of_particles_thread_count = 0;
-        //__syncthreads();
-        intersecting_particle_count = 0;
+        if (threadIdx.x == 0)
+          atomicAnd(&out_of_particles_thread_count, 0);
+        __syncthreads();
+        if (threadIdx.x == 0)
+          atomicAnd(
+              (unsigned *) // cast away volatile
+              &intersecting_particle_count, 0);
         if (n_particle >= block_end_particle)
-        #if 0
           atomicAdd(&out_of_particles_thread_count, 1);
-        #else
-          out_of_particles_thread_count += 1;
-        #endif
-        //__syncthreads();
+        __syncthreads();
         if (out_of_particles_thread_count == THREADS_PER_BLOCK)
           break;
       }
+
+      /*
       debugbuf[3*blockIdx.x] = blah;
       debugbuf[3*blockIdx.x+1] = blubb;
       debugbuf[3*blockIdx.x+2] = out_of_particles_thread_count;
+      */
 
       ## for d in range(vdim)
       j[(({{d}} * PARTICLE_CHUNK_COUNT + PARTICLE_CHUNK_NUM) * {{sift_block_count}} 
@@ -396,7 +393,7 @@ def time_sift(pib):
     }
     \n""", line_statement_prefix="##")
 
-    smod_sift = cuda.SourceModule(
+    smod_sift = SourceModule(
             sift_tpl.render(**ctx), 
             no_extern_c=True, keep=True)
 
@@ -425,7 +422,7 @@ def time_sift(pib):
     }
     \n""", line_statement_prefix="##")
 
-    smod_collect = cuda.SourceModule(
+    smod_collect = SourceModule(
             collect_tpl.render(**ctx), 
             no_extern_c=True, keep=True)
 

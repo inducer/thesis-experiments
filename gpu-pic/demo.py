@@ -72,7 +72,7 @@ def main():
 
         computed_j_fields = []
         for alg, func in [
-            ("brute", time_brute),
+            #("brute", time_brute),
             ("sift", time_sift),
             ]:
             rate, j = func(pib)
