@@ -33,6 +33,7 @@ def main() :
 
     # operator setup ----------------------------------------------------------
     def c_speed(x, el):
+        return 1
         if la.norm(x[1]) < 0.4:
             return 1
         else:
@@ -66,7 +67,7 @@ def main() :
     from hedge.mesh import make_rect_mesh_with_corner
 
     if rcon.is_head_rank:
-        mesh = make_rect_mesh_with_corner(a=(-1,-1),b=(1,1),max_area=0.003)
+        mesh = make_rect_mesh_with_corner(a=(-1,-1),b=(1,1),max_area=0.006)
         #coarse_mesh = make_rect_mesh_with_corner(a=(-1,-1),b=(1,1),max_area=0.01)
 
     if rcon.is_head_rank:
@@ -77,14 +78,16 @@ def main() :
         mesh_data = rcon.receive_mesh()
 
     discr = rcon.make_discretization(mesh_data, order=4,
-            #debug=["cuda_no_plan"],
-            init_cuda=True,
             default_scalar_type=numpy.float64,
-            tune_for=fwd_op.op_template())
+            #debug=["cuda_no_plan"],
+            #init_cuda=True,
+            #tune_for=fwd_op.op_template()
+            )
     coarse_discr = rcon.make_discretization(mesh_data, order=2,
-            debug=["cuda_no_plan"],
-            init_cuda=False,
-            default_scalar_type=numpy.float64)
+            default_scalar_type=numpy.float64
+            #debug=["cuda_no_plan"],
+            #init_cuda=False,
+            )
 
     def to_numpy(fld):
         return discr.convert_volume(fld, kind="numpy")
@@ -96,18 +99,18 @@ def main() :
 
     def sender_ic_u(x, el):
         x = x - numpy.array([0.5, -0.5])
-        return exp(-numpy.dot(x, x)*256)
+        return exp(-numpy.dot(x, x)*64)
 
     def receiver_ic_u(x, el):
         x = x - numpy.array([-0.5, 0.5])
-        return exp(-numpy.dot(x, x)*256)
+        return exp(-numpy.dot(x, x)*64)
 
 
     from hedge.tools import join_fields
     sender_fields = join_fields(discr.interpolate_volume_function(sender_ic_u),
             [discr.volume_zeros() for i in range(discr.dimensions)])
 
-    dt = discr.dt_factor(1)/5
+    dt = discr.dt_factor(1)/4
     nsteps = int(6/dt)
     if rcon.is_head_rank:
         print "dt", dt
@@ -137,27 +140,38 @@ def main() :
     from hedge.timestep import RK4TimeStepper
     stepper = RK4TimeStepper()
 
-    for step in range(nsteps):
-        logmgr.tick()
+    def do_fw_vis(step, t, fields):
+        visf = vis.make_file("fld-%04d" % step)
 
-        t = step*dt
+        vis.add_data(visf,
+                [(nm, to_numpy(fld)) for (nm, fld) in [
+                    ("s_u", fields[0]),
+                    ("s_v", fields[1:]), 
+                    ("c", fwd_op.c.volume_interpolant(0, discr)), 
+                ]],
+                time=t,
+                step=step)
+        visf.close()
 
-        if step % 100 == 0:
-            visf = vis.make_file("fld-%04d" % step)
+    def tsloop(fields):
+        for step in range(nsteps):
+            logmgr.tick()
 
-            vis.add_data(visf,
-                    [(nm, to_numpy(fld)) for (nm, fld) in [
-                        ("s_u", sender_fields[0]),
-                        ("s_v", sender_fields[1:]), 
-                        ("c", fwd_op.c.volume_interpolant(0, discr)), 
-                    ]],
-                    time=t,
-                    step=step)
-            visf.close()
+            t = step*dt
 
-        sender_fields = stepper(sender_fields, t, dt, fwd_rhs)
+            if step % 10 == 0:
+                do_fw_vis(step, t, fields)
+
+            fields = stepper(fields, t, dt, fwd_rhs)
+        do_fw_vis(step, t, fields)
+
+        return fields
+
+    sender_fields = tsloop(sender_fields)
+    logmgr.save()
 
     # backward timestep loop --------------------------------------------------
+    print "SWITCH DIRECTIONS"
     bwd_rhs = bwd_op.bind(discr)
 
     from hedge.discretization import Projector
@@ -198,34 +212,40 @@ def main() :
                 bwd_rhs(t, recv_diff),
                 sender[0]*recv[0])
 
+    def do_bw_vis():
+        d = discr.dimensions
+        visf = vis.make_file("bwd-fld-%04d" % step)
+
+        s_u = all_fields[0]
+        r_u = all_fields[1+d]
+
+        vis.add_data(visf,
+                [(nm, to_numpy(fld)) for nm, fld in [
+                    ("s_u", all_fields[0]),
+                    ("s_v", all_fields[1:1+d]), 
+                    ("r_u", all_fields[1+d]),
+                    ("r_v", all_fields[2+d:2+2*d]), 
+                    ("rdiff_u", all_fields[2*(1+d)]),
+                    ("rdiff_v", all_fields[2*(1+d)+1:3*(1+d)]), 
+                    ("corr", all_fields[3*(1+d)]), 
+                    ("claimed_dt_corr", s_u*r_u*discr.interpolate_volume_function(receiver_ic_u)), 
+                    ("c", bwd_op.c.volume_interpolant(0, discr)), 
+                ]],
+                time=t,
+                step=step)
+        visf.close()
+
     for step in range(nsteps):
         logmgr.tick()
 
         t = step*dt
 
-        def do_vis():
-            d = discr.dimensions
-            visf = vis.make_file("bwd-fld-%04d" % step)
-
-            vis.add_data(visf,
-                    [(nm, to_numpy(fld)) for nm, fld in [
-                        ("s_u", all_fields[0]),
-                        ("s_v", all_fields[1:1+d]), 
-                        ("r_u", all_fields[1+d]),
-                        ("r_v", all_fields[2+d:2+2*d]), 
-                        ("rdiff_u", all_fields[2*(1+d)]),
-                        ("rdiff_v", all_fields[2*(1+d)+1:3*(1+d)]), 
-                        ("corr", all_fields[3*(1+d)]), 
-                        ("c", bwd_op.c.volume_interpolant(0, discr)), 
-                    ]],
-                    time=t,
-                    step=step)
-            visf.close()
-
         if step % 100 == 0:
-            do_vis()
+            do_bw_vis()
 
         all_fields = all_stepper(all_fields, t, dt, combined_rhs)
+
+    do_bw_vis()
 
     # finish up ---------------------------------------------------------------
     vis.close()
