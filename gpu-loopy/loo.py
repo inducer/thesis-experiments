@@ -7,6 +7,7 @@ import pycuda.driver as cuda
 import pycuda.compiler as compiler
 import pycuda.gpuarray as gpuarray
 import pycuda.curandom as curandom
+from pytools import memoize_method
 
 class IndexDescriptor(Record):
     __slots__ = ["name", "start", "stop", "is_output"]
@@ -163,28 +164,6 @@ def generate_domain_assignments(domain, done_assignments=[],
 
 
 
-def block_size(assignments):
-    bs = [1]*3
-    for tia in [ass for ass in assignments
-            if isinstance(ass, ThreadIndexAssignment)]:
-        bs[tia.axis] = len(tia)
-
-    return bs
-
-
-
-
-def grid_size(assignments):
-    gs = [1]*2
-    for bia in [ass for ass in assignments
-            if isinstance(ass, BlockIndexAssignment)]:
-        gs[bia.axis] = len(bia)
-
-    return gs
-
-
-
-
 def full_subst(subst_map, expr):
     from pymbolic.mapper.substitutor import substitute
     while True:
@@ -211,10 +190,129 @@ class TexturingCCodeMapper(CCodeMapper):
         else:
             return CCodeMapper.map_subscript(self, expr, enclosing_prec)
 
+
+
+
+class KernelVariant:
+    def __init__(self, 
+            idx_assignments, transformed_output_indices, kernel):
+        self.subst_map = dict((s.old_variable, s.new_expr) 
+                for s in idx_assignments
+                if isinstance(s, IndexSubsitution))
+
+        self.idx_assignments = idx_assignments
+        self.output_indices = transformed_output_indices
+
+        self.insns = [
+                (full_subst(self.subst_map, lvalue),
+                    full_subst(self.subst_map, expr))
+                for lvalue, expr in kernel.insns]
+
+        self.kernel = kernel
+
+    @memoize_method
+    def thread_axes(self):
+        thread_axes = [None]*3
+        for tia in [ass for ass in self.idx_assignments
+                if isinstance(ass, ThreadIndexAssignment)]:
+            thread_axes[tia.axis] = tia
+
+        return thread_axes
+
+    @memoize_method
+    def block_axes(self):
+        block_axes = [None]*2
+        for bia in [ass for ass in self.idx_assignments
+                if isinstance(ass, BlockIndexAssignment)]:
+            block_axes[bia.axis] = bia
+        return block_axes
+
+    def block_size(self):
+        return tuple(
+                1 if bia is None else len(bia)
+                for bia in self.thread_axes())
+
+    def grid_size(self):
+        return tuple(
+                1 if gia is None else len(gia)
+                for gia in self.block_axes())
+
+    @memoize_method
+    def code(self):
+        from codepy.cgen import FunctionBody, FunctionDeclaration, \
+                Typedef, POD, Value, Pointer, Module, Block, \
+                Initializer, Assign, Statement, For
+
+        for_loops = [ass for ass in self.idx_assignments
+                if isinstance(ass, ForLoopAssignment)]
+        output_loops = [fl for fl in for_loops 
+                if fl.name in self.output_indices]
+        reduction_loops = [fl for fl in for_loops 
+                if fl.name not in self.output_indices]
+
+        from pymbolic.primitives import Subscript
+        ccm = TexturingCCodeMapper(self.kernel.input_vectors)
+
+        inner = Block([])
+        for lvalue, expr in self.insns:
+            assert isinstance(lvalue, Subscript)
+            name = lvalue.aggregate.name
+            inner.append(Statement("tmp_%s += %s"
+                % (name, ccm(expr, PREC_NONE))))
+
+        for loop in reduction_loops:
+            inner = For(
+                    "int %s = %s" % (loop.name, loop.start),
+                    "%s < %s" % (loop.name, loop.stop),
+                    "++%s" % loop.name, inner)
+
+        inner = Block(
+                [Initializer(POD(numpy.float32, 
+                    "tmp_"+lvalue.aggregate.name), 0)
+                    for lvalue, expr in self.insns]
+                +[inner]+
+                [Assign(
+                    ccm(lvalue, PREC_NONE),
+                    "tmp_"+lvalue.aggregate.name)
+                    for lvalue, expr in self.insns])
+
+        for loop in output_loops:
+            inner = For(
+                    "int %s = %s" % (loop.name, loop.start),
+                    "%s < %s" % (loop.name, loop.stop),
+                    "++%s" % loop.name, inner)
+
+        from codepy.cgen.cuda import CudaGlobal
+
+        mod = Module()
+
+        for v in self.kernel.input_vectors:
+            mod.append(
+                    Value("texture<float, 1, cudaReadModeElementType>",
+                        "tex_"+v));
+
+        mod.append(
+            FunctionBody(
+                CudaGlobal(FunctionDeclaration(
+                    Value("void", "loopy_kernel"),
+                    [Pointer(POD(numpy.float32, name)) 
+                        for name in self.kernel.output_vectors])),
+                Block([inner])))
+
+        return str(mod)
+
+    def func_and_texrefs(self):
+        mod = compiler.SourceModule(self.code())
+        texref_lookup = dict(
+                (iv, mod.get_texref("tex_"+iv))
+                for iv in self.kernel.input_vectors)
+        func = mod.get_function("loopy_kernel")
+        func.prepare("P" * len(self.kernel.output_vectors),
+                self.block_size(), texrefs=texref_lookup.values())
+
+        return func, texref_lookup
+
             
-
-
-
 
 
 class LoopyKernel:
@@ -254,42 +352,33 @@ class LoopyKernel:
         for ass, transformed_output_indices in \
                 generate_domain_assignments(domain, 
                         output_indices=self.output_indices):
-            if product(block_size(ass)) >= 128:
-                gs = grid_size(ass)
-                bs = block_size(ass)
-                gen_code = self.generate_code(ass, 
-                            transformed_output_indices)
-
-                mod = compiler.SourceModule(gen_code)
-                texref_lookup = dict(
-                        (iv, mod.get_texref("tex_"+iv))
-                        for iv in self.input_vectors)
-                func = mod.get_function("loopy_kernel")
-                func.prepare("P" * len(self.output_vectors),
-                        bs, texrefs=texref_lookup.values())
+            kv = KernelVariant(
+                    ass, transformed_output_indices, self)
+            if product(kv.block_size()) >= 128:
+                func, texref_lookup = kv.func_and_texrefs()
 
                 for i in range(1):
-                    bogus_launcher(gs, func, texref_lookup)
+                    bogus_launcher(kv.grid_size(), func, texref_lookup)
                 evt_start = cuda.Event()
                 evt_end = cuda.Event()
                 evt_start.record()
                 for i in range(2):
-                    bogus_launcher(gs, func, texref_lookup)
+                    bogus_launcher(kv.grid_size(), func, texref_lookup)
                 evt_end.record()
                 evt_end.synchronize()
 
                 elapsed = evt_end.time_since(evt_start)*1e-3
                 
                 print "-----------------------------------------------"
-                print "grid", gs
-                print "block", bs
+                print "grid", kv.grid_size()
+                print "block", kv.block_size
                 print
-                print gen_code
+                print kv.code()
                 print "-----------------------------------------------"
                 print "time: %f" % elapsed
                 print "gflops/s: %f" % (flop_count/elapsed/1e9)
                 print "-----------------------------------------------"
-                timings.append(("%s %s" % (gs, bs), elapsed))
+                timings.append(("%s %s" % (kv.grid_size(), kv.block_size()), elapsed))
 
         if False:
             from matplotlib.pyplot import plot, xticks, savefig
@@ -310,79 +399,15 @@ class LoopyKernel:
 
             print "%d solutions" % soln_count
 
-    def generate_code(self, assignments, output_indices):
-        from codepy.cgen import FunctionBody, FunctionDeclaration, \
-                Typedef, POD, Value, Pointer, Module, Block, \
-                Initializer, Assign, Statement, For
-
-        for_loops = [ass for ass in assignments
-                if isinstance(ass, ForLoopAssignment)]
-        output_loops = [fl for fl in for_loops 
-                if fl.name in output_indices]
-        reduction_loops = [fl for fl in for_loops 
-                if fl.name not in output_indices]
-
-        # construct fully resolved subst_map
-        subst_map = dict((s.old_variable, s.new_expr) 
-                for s in assignments
-                if isinstance(s, IndexSubsitution))
-
-        from pymbolic.primitives import Subscript
-        ccm = TexturingCCodeMapper(self.input_vectors)
-
-        inner = Block([])
-        for lvalue, expr in self.insns:
-            assert isinstance(lvalue, Subscript)
-            name = lvalue.aggregate.name
-            inner.append(Statement("tmp_%s += %s"
-                % (name, ccm(full_subst(subst_map, expr), PREC_NONE))))
-
-        for loop in reduction_loops:
-            inner = For(
-                    "int %s = %s" % (loop.name, loop.start),
-                    "%s < %s" % (loop.name, loop.stop),
-                    "++%s" % loop.name, inner)
-
-        inner = Block(
-                [Initializer(POD(numpy.float32, 
-                    "tmp_"+lvalue.aggregate.name), 0)
-                    for lvalue, expr in self.insns]
-                +[inner]+
-                [Assign(
-                    ccm(full_subst(subst_map, lvalue), PREC_NONE),
-                    "tmp_"+lvalue.aggregate.name)
-                    for lvalue, expr in self.insns])
-
-        for loop in output_loops:
-            inner = For(
-                    "int %s = %s" % (loop.name, loop.start),
-                    "%s < %s" % (loop.name, loop.stop),
-                    "++%s" % loop.name, inner)
-
-        from codepy.cgen.cuda import CudaGlobal
-
-        mod = Module()
-
-        for v in self.input_vectors:
-            mod.append(
-                    Value("texture<float, 1, cudaReadModeElementType>",
-                        "tex_"+v));
-
-        mod.append(
-            FunctionBody(
-                CudaGlobal(FunctionDeclaration(
-                    Value("void", "loopy_kernel"),
-                    [Pointer(POD(numpy.float32, name)) for name in self.output_vectors])),
-                Block([inner])))
-
-        return str(mod)
 
     def __call__(self, **vars):
         pass
 
-def main():
-    from pymbolic import parse
 
+
+
+
+def main():
     n = 16*34
     a = curandom.rand((n, n))
     b = curandom.rand((n, n))
