@@ -1,5 +1,7 @@
 from pytools import Record
 import numpy
+from pymbolic.mapper.c_code import CCodeMapper
+from pymbolic.mapper.stringifier import PREC_NONE
 
 class IndexDescriptor(Record):
     __slots__ = ["name", "start", "stop", "is_output"]
@@ -19,11 +21,9 @@ class BlockIndexAssignment(IndexAssignment):
 
 class ThreadIndexAssignment(IndexAssignment):
     __slots__ = ["axis"]
-    pass
 
-class IndexSubsitution(Record):
+class IndexSubsitution(Record): 
     __slots__ = ["old_variable", "new_expr"]
-    pass
 
 
 
@@ -191,6 +191,27 @@ def full_subst(subst_map, expr):
 
 
 
+class TexturingCCodeMapper(CCodeMapper):
+    def __init__(self, input_vectors):
+        CCodeMapper.__init__(self)
+        self.input_vectors = input_vectors
+
+    def map_subscript(self, expr, enclosing_prec):
+        from pymbolic.primitives import Variable
+        if (isinstance(expr.aggregate, Variable)
+                and expr.aggregate.name in self.input_vectors):
+            return "tex1Dfetch(tex_%s, %s)" % (
+                    expr.aggregate.name,
+                    self.rec(expr.index, PREC_NONE))
+        else:
+            return CCodeMapper.map_subscript(self, expr, enclosing_prec)
+
+            
+
+
+
+
+
 class LoopyKernel:
     def __init__(self, domain, insns):
         from pymbolic import parse
@@ -257,9 +278,7 @@ class LoopyKernel:
                 if isinstance(s, IndexSubsitution))
 
         from pymbolic.primitives import Subscript
-        from pymbolic.mapper.c_code import CCodeMapper
-        from pymbolic.mapper.stringifier import PREC_NONE
-        ccm = CCodeMapper()
+        ccm = TexturingCCodeMapper(self.input_vectors)
 
         inner = Block([])
         for lvalue, expr in self.insns:
