@@ -46,3 +46,6 @@ hostfile
 *.dat-rank*
 flux_lift.cu
 a.out
+gm_quadpoints.m
+*.keep
+*-out.txt
