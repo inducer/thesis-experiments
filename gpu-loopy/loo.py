@@ -2,6 +2,11 @@ from pytools import Record
 import numpy
 from pymbolic.mapper.c_code import CCodeMapper
 from pymbolic.mapper.stringifier import PREC_NONE
+import pycuda.autoinit
+import pycuda.driver as cuda
+import pycuda.compiler as compiler
+import pycuda.gpuarray as gpuarray
+import pycuda.curandom as curandom
 
 class IndexDescriptor(Record):
     __slots__ = ["name", "start", "stop", "is_output"]
@@ -213,7 +218,7 @@ class TexturingCCodeMapper(CCodeMapper):
 
 
 class LoopyKernel:
-    def __init__(self, domain, insns):
+    def __init__(self, domain, insns, bogus_launcher, flop_count):
         from pymbolic import parse
         self.insns = [(parse(lvalue), parse(expr)) 
                 for lvalue, expr in insns]
@@ -245,20 +250,65 @@ class LoopyKernel:
 
         from pytools import product
 
-        soln_count = 0
+        timings = []
         for ass, transformed_output_indices in \
                 generate_domain_assignments(domain, 
                         output_indices=self.output_indices):
             if product(block_size(ass)) >= 128:
+                gs = grid_size(ass)
+                bs = block_size(ass)
+                gen_code = self.generate_code(ass, 
+                            transformed_output_indices)
+
+                mod = compiler.SourceModule(gen_code)
+                texref_lookup = dict(
+                        (iv, mod.get_texref("tex_"+iv))
+                        for iv in self.input_vectors)
+                func = mod.get_function("loopy_kernel")
+                func.prepare("P" * len(self.output_vectors),
+                        bs, texrefs=texref_lookup.values())
+
+                for i in range(1):
+                    bogus_launcher(gs, func, texref_lookup)
+                evt_start = cuda.Event()
+                evt_end = cuda.Event()
+                evt_start.record()
+                for i in range(2):
+                    bogus_launcher(gs, func, texref_lookup)
+                evt_end.record()
+                evt_end.synchronize()
+
+                elapsed = evt_end.time_since(evt_start)*1e-3
+                
                 print "-----------------------------------------------"
-                print "grid", grid_size(ass)
-                print "block", block_size(ass)
+                print "grid", gs
+                print "block", bs
                 print
-                print self.generate_code(ass, transformed_output_indices)
+                print gen_code
+                print "-----------------------------------------------"
+                print "time: %f" % elapsed
+                print "gflops/s: %f" % (flop_count/elapsed/1e9)
+                print "-----------------------------------------------"
+                timings.append(("%s %s" % (gs, bs), elapsed))
 
-                soln_count += 1
+        if False:
+            from matplotlib.pyplot import plot, xticks, savefig
+            timings.sort(key=lambda e: e[1])
+            labels, times = zip(*timings)
+            times = numpy.array(times)
+            flops = flop_count/times
 
-        print "%d solutions" % soln_count
+            x_points = arange(len(times))
+            plot(x_points, times, "o")
+            xticks(x_points, labels)
+            savefig("times.png")
+
+            clf()
+            plot(x_points, flops, "o")
+            xticks(x_points, labels)
+            savefig("times.png")
+
+            print "%d solutions" % soln_count
 
     def generate_code(self, assignments, output_indices):
         from codepy.cgen import FunctionBody, FunctionDeclaration, \
@@ -315,7 +365,7 @@ class LoopyKernel:
 
         for v in self.input_vectors:
             mod.append(
-                    Value("texture<float32, 1, cudaReadModeElement>",
+                    Value("texture<float, 1, cudaReadModeElementType>",
                         "tex_"+v));
 
         mod.append(
@@ -332,13 +382,25 @@ class LoopyKernel:
 
 def main():
     from pymbolic import parse
+
+    n = 16*34
+    a = curandom.rand((n, n))
+    b = curandom.rand((n, n))
+    c = gpuarray.empty_like(a)
+
+    def bogus_launcher(grid, kernel, texref_lookup):
+        a.bind_to_texref_ext(texref_lookup["a"])
+        b.bind_to_texref_ext(texref_lookup["b"])
+        kernel.prepared_call(grid, c.gpudata)
+
     k = LoopyKernel([
-        ("i", 16*34),
-        ("j", 16*34),
-        ("k", 16*34),
+        ("i", n),
+        ("j", n),
+        ("k", n),
         ],
-        [ ("c[i+16*34*j]", "a[i+16*34*k]*b[k+16*34*j]") ]
-        )
+        [ ("c[i+16*34*j]", "a[i+16*34*k]*b[k+16*34*j]") ],
+        bogus_launcher,
+        flop_count=2*n**3)
 
 
 
