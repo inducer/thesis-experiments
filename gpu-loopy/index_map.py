@@ -5,6 +5,7 @@ from pytools import Record, memoize_method
 from pymbolic.mapper.dependency import DependencyMapper
 from pymbolic.mapper.c_code import CCodeMapper
 from pymbolic.mapper.stringifier import PREC_NONE
+from pymbolic.mapper import CombineMapper
 
 have_cuda = False
 
@@ -317,6 +318,75 @@ def generate_dim_assignments(kernel, idx=0,
 
 
 
+class IndexExpressionCollector(CombineMapper):
+    def __init__(self, tgt_vector_name):
+        self.tgt_vector_name = tgt_vector_name
+
+    def combine(self, values):
+        from pytools import flatten
+        return set(flatten(values))
+
+    def map_constant(self, expr):
+        return set()
+
+    def map_algebraic_leaf(self, expr):
+        return set()
+
+    def map_subscript(self, expr):
+        from pymbolic.primitives import Variable
+        assert isinstance(expr.aggregate, Variable)
+
+        if expr.aggregate.name == self.tgt_vector_name:
+            return set([expr.index])
+        else:
+            return CombineMapper.map_subscript(self, expr)
+
+
+
+
+def generate_kernels_prefetching(ivec, kernel):
+    from pytools import flatten
+    index_exprs = set(flatten(
+        IndexExpressionCollector(ivec)(expression)
+        for lvalue, expression in kernel.instructions
+        ))
+
+    dm = DependencyMapper()
+
+    involved_dims = list(set(kernel.name_to_dim(idx.name)
+        for iexpr in index_exprs
+        for idx in dm(iexpr)))
+
+    prefetch_dims = [dim
+            for dim in involved_dims
+            if isinstance(dim.tag, THREAD_IDX_TAG)]
+    uncertain_dims = [dim
+            for dim in involved_dims
+            if not isinstance(dim.tag, THREAD_IDX_TAG)]
+
+    from pytools import generate_nonnegative_integer_tuples_below as gnitt
+    for flags in gnitt(2, len(uncertain_dims)):
+        uncertain_dims
+
+
+
+
+    print "YO %s {%s}" % (ivec, 
+            ", ".join(str(iexpr) for iexpr in index_exprs))
+    raw_input()
+    yield kernel
+
+def generate_all_prefetching_kernels(kernel):
+    for ivec in kernel.input_vectors():
+        for kernel in generate_kernels_prefetching(ivec, kernel):
+            yield kernel
+
+
+
+
+
+
+# code generation -------------------------------------------------------------
 class LoopyCCodeMapper(CCodeMapper):
     def __init__(self, kernel):
         CCodeMapper.__init__(self)
@@ -344,8 +414,6 @@ class LoopyCCodeMapper(CCodeMapper):
                 return "blockIdx."+AXES[dim.tag.axis]
             else:
                 return CCodeMapper.map_variable(self, expr, enclosing_prec)
-
-
 
 
 
@@ -410,6 +478,7 @@ def generate_code(kernel):
 
 
 
+# driver ----------------------------------------------------------------------
 def main():
     n = 16*34
     if have_cuda:
@@ -431,11 +500,11 @@ def main():
         ])
 
     for knl in generate_dim_assignments(k):
-        for d in knl.dims:
-            print d
-        print
-        print generate_code(knl)
-        raw_input()
+        for pf_knl in generate_all_prefetching_kernels(knl):
+            for d in knl.dims:
+                print d
+            print
+            print generate_code(knl)
 
 
 

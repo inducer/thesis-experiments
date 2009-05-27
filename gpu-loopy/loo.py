@@ -3,11 +3,16 @@ import numpy
 from pymbolic.mapper.c_code import CCodeMapper
 from pymbolic.mapper.evaluator import EvaluationMapper
 from pymbolic.mapper.stringifier import PREC_NONE
-import pycuda.autoinit
-import pycuda.driver as cuda
-import pycuda.compiler as compiler
-import pycuda.gpuarray as gpuarray
-import pycuda.curandom as curandom
+
+have_cuda = False
+
+if have_cuda:
+    import pycuda.autoinit
+    import pycuda.driver as cuda
+    import pycuda.compiler as compiler
+    import pycuda.gpuarray as gpuarray
+    import pycuda.curandom as curandom
+
 from pytools import memoize_method
 
 class IndexDescriptor(Record):
@@ -397,7 +402,7 @@ class LoopyKernel:
         dm = DependencyMapper(include_subscripts=False)
 
         from pymbolic import var
-        all_indices = set(idx[0] for idx in domain)
+        indices = set(idx[0] for idx in domain)
 
         self.output_indices = set()
         for lvalue, expr in self.insns:
@@ -481,9 +486,10 @@ class LoopyKernel:
 
 def main():
     n = 16*34
-    a = curandom.rand((n, n))
-    b = curandom.rand((n, n))
-    c = gpuarray.empty_like(a)
+    if have_cuda:
+        a = curandom.rand((n, n))
+        b = curandom.rand((n, n))
+        c = gpuarray.empty_like(a)
 
     def bogus_launcher(grid, kernel, texref_lookup):
         a.bind_to_texref_ext(texref_lookup["a"])
@@ -498,7 +504,6 @@ def main():
         [ ("c[i+16*34*j]", "a[i+16*34*k]*b[k+16*34*j]") ],
         bogus_launcher,
         flop_count=2*n**3)
-
 
 
 
