@@ -1,6 +1,7 @@
 from pytools import Record
 import numpy
 from pymbolic.mapper.c_code import CCodeMapper
+from pymbolic.mapper.evaluator import EvaluationMapper
 from pymbolic.mapper.stringifier import PREC_NONE
 import pycuda.autoinit
 import pycuda.driver as cuda
@@ -208,7 +209,17 @@ class KernelVariant:
                     full_subst(self.subst_map, expr))
                 for lvalue, expr in kernel.insns]
 
+        self.for_loops = [ass for ass in self.idx_assignments
+                if isinstance(ass, ForLoopAssignment)]
+        self.output_loops = [fl for fl in self.for_loops 
+                if fl.name in self.output_indices]
+        self.reduction_loops = [fl for fl in self.for_loops 
+                if fl.name not in self.output_indices]
+
         self.kernel = kernel
+
+        find_reuse(self, self.insns[0][1])
+        raw_input()
 
     @memoize_method
     def thread_axes(self):
@@ -243,13 +254,6 @@ class KernelVariant:
                 Typedef, POD, Value, Pointer, Module, Block, \
                 Initializer, Assign, Statement, For
 
-        for_loops = [ass for ass in self.idx_assignments
-                if isinstance(ass, ForLoopAssignment)]
-        output_loops = [fl for fl in for_loops 
-                if fl.name in self.output_indices]
-        reduction_loops = [fl for fl in for_loops 
-                if fl.name not in self.output_indices]
-
         from pymbolic.primitives import Subscript
         ccm = TexturingCCodeMapper(self.kernel.input_vectors)
 
@@ -260,7 +264,7 @@ class KernelVariant:
             inner.append(Statement("tmp_%s += %s"
                 % (name, ccm(expr, PREC_NONE))))
 
-        for loop in reduction_loops:
+        for loop in self.reduction_loops:
             inner = For(
                     "int %s = %s" % (loop.name, loop.start),
                     "%s < %s" % (loop.name, loop.stop),
@@ -276,7 +280,7 @@ class KernelVariant:
                     "tmp_"+lvalue.aggregate.name)
                     for lvalue, expr in self.insns])
 
-        for loop in output_loops:
+        for loop in self.output_loops:
             inner = For(
                     "int %s = %s" % (loop.name, loop.start),
                     "%s < %s" % (loop.name, loop.stop),
@@ -312,7 +316,75 @@ class KernelVariant:
 
         return func, texref_lookup
 
-            
+
+
+
+class ReuseDetectingEvaluationMapper(EvaluationMapper):
+    def __init__(self, context):
+        EvaluationMapper.__init__(self, context)
+        self.reuse_map = {}
+        # variable -> index -> [count, exprs]
+
+        self.max_reuse_map = {}
+
+    def map_subscript(self, expr):
+        from pymbolic.primitives import Variable
+        if (isinstance(expr.aggregate, Variable)):
+            var_name = expr.aggregate.name
+            var_reuse_dict = self.reuse_map.setdefault(
+                    var_name, {})
+            idx_reuse_data = var_reuse_dict.setdefault(
+                    self.rec(expr.index), [0, []])
+            idx_reuse_data[0] += 1
+            idx_reuse_data[1].append(
+                (expr.index, self.context.copy()))
+
+            self.max_reuse_map[var_name] = max(
+                    self.max_reuse_map.get(var_name, 0),
+                    idx_reuse_data[0])
+
+            return 0
+        else:
+            return EvaluationMapper.map_subscript(self, expr)
+        
+
+
+
+def find_reuse(kv, expr):
+    print expr
+
+    t_axes_names = ["threadIdx."+AXES[i] 
+            for i, ta in enumerate(kv.thread_axes()) if ta is not None]
+
+    context = dict(("blockIdx."+AXES[i], 0) 
+            for i, bia in enumerate(kv.block_axes()) if bia is not None)
+
+    context.update(dict(
+        (ol.name, 0) for ol in kv.output_loops))
+
+    redloop_names, redloop_bounds = zip(*[
+        (fl.name, min(16, len(fl))) for fl in kv.reduction_loops
+        ])
+
+    from pytools import generate_nonnegative_integer_tuples_below as gnitb
+    mapper = ReuseDetectingEvaluationMapper(context)
+    for rli in gnitb(redloop_bounds):
+        mapper.context.update(dict(zip(redloop_names, rli)))
+        for ti in gnitb(kv.block_size()):
+            mapper.context.update(dict(zip(t_axes_names, ti)))
+            mapper(expr)
+
+    for var, reuse in mapper.reuse_map.iteritems():
+        max_reuse = mapper.max_reuse_map[var]
+        if max_reuse == 1:
+            continue
+        print "VARIABLE %s max re-use: %d" % (var, max_reuse)
+        for i, (reuse_count, reuse_info) in reuse.iteritems():
+            print "  ", i, reuse_count
+            for idx_expr, ctx in reuse_info:
+                print "    %s | %s" % (idx_expr, ctx)
+
+
 
 
 class LoopyKernel:
