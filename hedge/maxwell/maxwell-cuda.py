@@ -118,6 +118,9 @@ def main():
     op = MaxwellOperator(epsilon, mu, flux_type=1)
 
     debug_flags = [ ]
+    if not options.cpu:
+        debug_flags.append("cuda_no_plan_el_local")
+
     if options.debug_flags:
         debug_flags.extend(options.debug_flags.split(","))
 
