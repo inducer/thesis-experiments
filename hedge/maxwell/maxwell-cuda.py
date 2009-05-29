@@ -29,7 +29,8 @@ def main():
     parser = OptionParser()
     parser.add_option("--single", action="store_true")
     parser.add_option("--order", default=4, type="int")
-    parser.add_option("--h", default=0.08, type="float")
+    parser.add_option("--h", default=None, type="float")
+    parser.add_option("--mesh-size", default=1, type="float")
     parser.add_option("--final-time", default=4e-10, type="float")
     parser.add_option("--vis-interval", default=0, type="int")
     parser.add_option("--profile", action="store_true")
@@ -94,7 +95,12 @@ def main():
     mode = RectangularCavityMode(epsilon, mu, (1,1,1))
 
     if rcon.is_head_rank:
-        mesh = make_box_mesh(max_volume=options.h**3/6, periodicity=periodicity)
+        if options.h:
+            max_volume = options.h**3/6
+        else:
+            max_volume = 8e-5 / options.mesh_size
+
+        mesh = make_box_mesh(max_volume=max_volume, periodicity=periodicity)
         #mesh = make_box_mesh(max_volume=0.0007, periodicity=periodicity)
                 #return_meshpy_mesh=True
         #meshpy_mesh.write_neu(open("box.neu", "w"), 
@@ -187,9 +193,9 @@ def main():
             "/t_step.max"
             )
             ])
-    print logmgr.have_nonlocal_watches
 
     logmgr.set_constant("h", options.h)
+    logmgr.set_constant("mesh_size", options.mesh_size)
     logmgr.set_constant("is_cpu", options.cpu)
 
     # timestep loop -------------------------------------------------------
