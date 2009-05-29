@@ -79,14 +79,14 @@ def main() :
 
     discr = rcon.make_discretization(mesh_data, order=4,
             default_scalar_type=numpy.float64,
-            #debug=["cuda_no_plan"],
-            #init_cuda=True,
-            #tune_for=fwd_op.op_template()
+            debug=["cuda_no_plan"],
+            init_cuda=True,
+            tune_for=fwd_op.op_template()
             )
     coarse_discr = rcon.make_discretization(mesh_data, order=2,
-            default_scalar_type=numpy.float64
-            #debug=["cuda_no_plan"],
-            #init_cuda=False,
+            default_scalar_type=numpy.float64,
+            debug=["cuda_no_plan"],
+            init_cuda=False,
             )
 
     def to_numpy(fld):
@@ -112,6 +112,7 @@ def main() :
 
     dt = discr.dt_factor(1)/4
     nsteps = int(6/dt)
+    #nsteps = 10
     if rcon.is_head_rank:
         print "dt", dt
         print "nsteps", nsteps
@@ -193,7 +194,9 @@ def main() :
             [discr.volume_zeros() for i in range(discr.dimensions)],
             receiver_cf_diff, # rec_diff
             [discr.volume_zeros() for i in range(discr.dimensions)],
-            discr.volume_zeros() # correlation
+            discr.volume_zeros(), # correlation
+            discr.inner_product(sender_fields[0], 
+                receiver_source_fine)
             )
 
     from hedge.timestep import RK4TimeStepper
@@ -206,35 +209,42 @@ def main() :
         recv_diff = all_fields[2*(d+1):3*(d+1)]
         corr = all_fields[3*(d+1)]
 
+        window = discr.interpolate_volume_function(receiver_ic_u)
+
+        from hedge.tools import to_obj_array
         return join_fields(
                 bwd_rhs(t, sender),
                 bwd_rhs(t, recv),
                 bwd_rhs(t, recv_diff),
-                sender[0]*recv[0])
+                sender[0]*recv[0],
+                discr.inner_product(sender[0], recv[0]*window)
+                )
 
     def do_bw_vis():
         d = discr.dimensions
         visf = vis.make_file("bwd-fld-%04d" % step)
 
-        s_u = all_fields[0]
-        r_u = all_fields[1+d]
+        s_w = all_fields[0:1+d]
+        r_w = all_fields[1+d:2*(1+d)]
+
+        window = discr.interpolate_volume_function(receiver_ic_u)
 
         vis.add_data(visf,
                 [(nm, to_numpy(fld)) for nm, fld in [
-                    ("s_u", all_fields[0]),
-                    ("s_v", all_fields[1:1+d]), 
-                    ("r_u", all_fields[1+d]),
-                    ("r_v", all_fields[2+d:2+2*d]), 
+                    ("s_u", s_w[0]),
+                    ("s_v", s_w[1:]), 
+                    ("r_u", r_w[0]),
+                    ("r_v", r_w[1:]), 
                     ("rdiff_u", all_fields[2*(1+d)]),
                     ("rdiff_v", all_fields[2*(1+d)+1:3*(1+d)]), 
-                    ("corr", all_fields[3*(1+d)]), 
-                    ("claimed_dt_corr", s_u*r_u*discr.interpolate_volume_function(receiver_ic_u)), 
+                    ("corr", all_fields[3*(1+d)]),
                     ("c", bwd_op.c.volume_interpolant(0, discr)), 
                 ]],
                 time=t,
                 step=step)
         visf.close()
 
+    d = discr.dimensions
     for step in range(nsteps):
         logmgr.tick()
 
@@ -243,7 +253,13 @@ def main() :
         if step % 100 == 0:
             do_bw_vis()
 
-        all_fields = all_stepper(all_fields, t, dt, combined_rhs)
+        if step % 100 == 0:
+            all_fields = all_stepper(all_fields, t, dt, combined_rhs)
+
+            s_w = all_fields[0:1+d]
+            r_w = all_fields[1+d:2*(1+d)]
+            corr_ip = discr.inner_product(s_w, r_w)
+            print all_fields[1+3*(1+d)], corr_ip
 
     do_bw_vis()
 
