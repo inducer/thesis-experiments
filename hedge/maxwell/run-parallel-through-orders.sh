@@ -12,14 +12,20 @@ for where in gpu cpu; do
         whereopt="-d cuda_plan_no_progress"
       fi
 
-      echo "------------------------------------------------------"
-      echo "ORDER $o $where NP $np"
-      echo "------------------------------------------------------"
-      mpirun -hostfile ~/hostfiles/hpcgeek-gpus -np $np \
-        `which python` $ROOT/maxwell-cuda.py --single --local-watches \
-        --log-file="maxwell-np$np-o$o-$where.dat" --mesh-size=$((np)) \
-        --order=$o $HOPT $whereopt --steps=100 \
-        "$@"
+      identifier="maxwell-np$np-o$o-$where"
+      complfile="$identifier-completed"
+      if ! (test -f "$complfile" && test -f "$identifier.dat-rank0"); then
+        echo "------------------------------------------------------"
+        echo "ORDER $o $where NP $np"
+        echo "------------------------------------------------------"
+        rm -f $identifier.dat*
+        rm -f "$complfile"
+        ( mpirun -hostfile ~/hostfiles/hpcgeek-gpus -np $np \
+          `which python` -O $ROOT/maxwell-cuda.py --single --local-watches \
+          --log-file="$identifier.dat" --mesh-size=$((np)) \
+          --order=$o $HOPT $whereopt --steps=100 \
+          "$@" && touch "$complfile")
+      fi
     done
   done
 done

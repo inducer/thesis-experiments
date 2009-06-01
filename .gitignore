@@ -49,3 +49,4 @@ a.out
 gm_quadpoints.m
 *.keep
 *-out.txt
+*.db
