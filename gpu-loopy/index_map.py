@@ -318,6 +318,73 @@ def generate_dim_assignments(kernel, idx=0,
 
 
 
+# prefetch-related ------------------------------------------------------------
+def vector_prefetch_size(vec_prefetch):
+    from pytools import product
+    return 4*product(dim.length for dim in vec_prefetch)
+
+def total_prefetch_size(kernel_prefetch):
+    return sum(vector_prefetch_size(vp) 
+            for vp in kernel_prefetch.values())
+
+def generate_prefetch_sizes(kernel, ivec, prefetch_dims):
+    if not prefetch_dims:
+        yield kernel
+        return
+
+    dim = prefetch_dims[0]
+
+    if isinstance(dim.tag, THREAD_IDX_TAG):
+        new_prefetch = kernel.prefetch.copy()
+        new_prefetch[ivec] = new_prefetch.get(ivec, []) + [dim]
+
+        if total_prefetch_size(new_prefetch) <= 16384:
+            for knl in generate_prefetch_sizes(
+                    kernel.copy(prefetch=new_prefetch),
+                    ivec, prefetch_dims[1:]):
+                yield knl
+    else:
+        prefetch_length = 1
+        while prefetch_length < dim.length:
+            if prefetch_length > dim.length:
+                prefetch_length = dim.length
+
+            if dim.length % prefetch_length != 0:
+                break
+
+            outer_length = dim.length//prefetch_length
+            if outer_length > 1:
+                # split the dimension, then generate prefetch
+                inner_name = dim.name+"_prefetch"
+
+                new_prefetch = kernel.prefetch.copy()
+                new_prefetch[ivec] = (
+                        new_prefetch.get(ivec, []) + 
+                        [LoopDimension(inner_name, prefetch_length)])
+                new_kernel = kernel.copy(prefetch=new_prefetch)
+
+                for knl in generate_prefetch_sizes(
+                        new_kernel.split_dimension(
+                            kernel.name_to_idx(dim.name),
+                            inner_length=prefetch_length,
+                            inner_name=inner_name), 
+                        ivec, prefetch_dims[1:]):
+                    yield knl
+            else:
+                # prefetch the whole dimension
+                new_prefetch = kernel.prefetch.copy()
+                new_prefetch[ivec] = new_prefetch.get(ivec, []) + [dim]
+
+                for knl in generate_prefetch_sizes(
+                        kernel.copy(prefetch=new_prefetch),
+                        ivec, prefetch_dims[1:]):
+                    yield knl
+
+            prefetch_length *= 2
+
+
+
+
 class IndexExpressionCollector(CombineMapper):
     def __init__(self, tgt_vector_name):
         self.tgt_vector_name = tgt_vector_name
@@ -344,7 +411,7 @@ class IndexExpressionCollector(CombineMapper):
 
 
 
-def generate_kernels_prefetching(ivec, kernel):
+def generate_kernel_prefetch_choices(ivec, kernel):
     from pytools import flatten
     index_exprs = set(flatten(
         IndexExpressionCollector(ivec)(expression)
@@ -362,24 +429,25 @@ def generate_kernels_prefetching(ivec, kernel):
             if isinstance(dim.tag, THREAD_IDX_TAG)]
     uncertain_dims = [dim
             for dim in involved_dims
-            if not isinstance(dim.tag, THREAD_IDX_TAG)]
+            if not isinstance(dim.tag, (THREAD_IDX_TAG, BLOCK_IDX_TAG))]
 
     from pytools import generate_nonnegative_integer_tuples_below as gnitt
     for flags in gnitt(2, len(uncertain_dims)):
-        uncertain_dims
+        my_prefetch_dims = prefetch_dims + [
+                udim for udim, flag in zip(uncertain_dims, flags)
+                if flag]
+        for knl in generate_prefetch_sizes(kernel, ivec, my_prefetch_dims):
+            yield knl
 
 
 
 
-    print "YO %s {%s}" % (ivec, 
-            ", ".join(str(iexpr) for iexpr in index_exprs))
-    raw_input()
-    yield kernel
 
 def generate_all_prefetching_kernels(kernel):
+    kernel = kernel.copy(prefetch={})
     for ivec in kernel.input_vectors():
-        for kernel in generate_kernels_prefetching(ivec, kernel):
-            yield kernel
+        for knl in generate_kernel_prefetch_choices(ivec, kernel):
+            yield knl
 
 
 
@@ -499,12 +567,19 @@ def main():
         ("c[i+16*34*j]", "a[i+16*34*k]*b[k+16*34*j]") 
         ])
 
+    soln_count = 0
     for knl in generate_dim_assignments(k):
         for pf_knl in generate_all_prefetching_kernels(knl):
-            for d in knl.dims:
-                print d
-            print
-            print generate_code(knl)
+            print "PREFETCH", total_prefetch_size(pf_knl.prefetch), \
+                    pf_knl.prefetch
+            soln_count += 1
+
+    print soln_count
+
+            #for d in knl.dims:
+                #print d
+            #print
+            #print generate_code(knl)
 
 
 
