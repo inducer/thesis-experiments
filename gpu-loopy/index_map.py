@@ -437,6 +437,8 @@ def generate_prefetch_sizes(kernel, ivec, iexpr, prefetch_dims):
     else:
         prefetch_length = 2
         while prefetch_length < dim.length:
+            print "PFDIM", dim.name, prefetch_length
+
             if prefetch_length > dim.length:
                 prefetch_length = dim.length
 
@@ -529,6 +531,7 @@ def generate_kernel_prefetch_choices(ivec, kernel):
             my_prefetch_dims = prefetch_dims + [
                     udim for udim, flag in zip(uncertain_dims, flags)
                     if flag]
+            print "PFDIMS", my_prefetch_dims
             for knl in generate_prefetch_sizes(kernel, 
                     ivec, index_expr, my_prefetch_dims):
                 yield knl
@@ -584,6 +587,9 @@ def generate_loop_schedules(kernel):
             # in this branch. at least one of its loop dimensions
             # was already scheduled, and that dimension is not 
             # borrowable.
+            print "UNSCHEDULABLE:"
+            print_kernel_info(kernel)
+            raw_input()
             return
 
         new_kernel = kernel.copy(schedule=prev_schedule+[pf])
