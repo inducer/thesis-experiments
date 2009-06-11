@@ -1,41 +1,25 @@
-from pytools import Record
+from __future__ import division
+
 import numpy
+from pytools import Record, memoize_method
+from pymbolic.mapper.dependency import DependencyMapper
 from pymbolic.mapper.c_code import CCodeMapper
-from pymbolic.mapper.evaluator import EvaluationMapper
 from pymbolic.mapper.stringifier import PREC_NONE
+from pymbolic.mapper import CombineMapper
 
-have_cuda = False
+SMEM_BYTES = 16384
+MAX_THREADS_PER_BLOCK = 512
 
-if have_cuda:
+try:
     import pycuda.autoinit
+except:
+    HAVE_CUDA = False
+else:
+    HAVE_CUDA = True
     import pycuda.driver as cuda
     import pycuda.compiler as compiler
     import pycuda.gpuarray as gpuarray
     import pycuda.curandom as curandom
-
-from pytools import memoize_method
-
-class IndexDescriptor(Record):
-    __slots__ = ["name", "start", "stop", "is_output"]
-
-class IndexAssignment(Record):
-    __slots__ = ["name", "start", "stop"]
-
-    def __len__(self):
-        return self.stop-self.start
-
-class ForLoopAssignment(IndexAssignment):
-    pass
-
-class BlockIndexAssignment(IndexAssignment):
-    __slots__ = ["axis"]
-    pass
-
-class ThreadIndexAssignment(IndexAssignment):
-    __slots__ = ["axis"]
-
-class IndexSubsitution(Record): 
-    __slots__ = ["old_variable", "new_expr"]
 
 
 
@@ -45,440 +29,1023 @@ AXES = ["x", "y", "z", "w"]
 
 
 
-def generate_thread_index_assignment_numberings(assignments):
-    ti_ass = [ass for ass in assignments
-            if isinstance(ass, ThreadIndexAssignment)]
-    other_ass = [ass for ass in assignments
-            if not isinstance(ass, ThreadIndexAssignment)]
+class BLOCK_IDX_TAG:
+    def __init__(self, axis=None):
+        self.axis = axis
 
-    if not ti_ass:
-        yield assignments
-    else:
-        from pytools import generate_unique_permutations
+    def __repr__(self):
+        if self.axis is None:
+            return "BLOCK_IDX"
+        else:
+            return "BLOCK_IDX(%d)" % self.axis
+
+    def __eq__(self, other):
+        return (self.__class__ == other.__class__
+                and self.axis == other.axis)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+class THREAD_IDX_TAG:
+    def __init__(self, axis=None):
+        self.axis = axis
+
+    def __repr__(self):
+        if self.axis is None:
+            return "THREAD_IDX"
+        else:
+            return "THREAD_IDX(%d)" % self.axis
+
+    def __eq__(self, other):
+        return (self.__class__ == other.__class__
+                and self.axis == other.axis)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+class LoopDimension(Record):
+    __slots__ = ["name", "length", "tag"]
+
+    def __init__(self, name, length, tag=None):
+        Record.__init__(self, name=name, length=length, tag=tag)
+
+    def __hash__(self):
+        return hash(self.name)
+
+    def __repr__(self):
+        if self.tag is not None:
+            return "LD(%r, %d, %s)" % (self.name, self.length, self.tag)
+        else:
+            return "LD(%r, %d)" % (self.name, self.length)
+
+
+
+
+
+class LoopDomain(Record):
+    __slots__ = ["dims"]
+
+    def name_to_idx(self, name):
+        for i, dim in enumerate(self.dims):
+            if dim.name == name:
+                return i
+        else: 
+            raise KeyError("invalid dimension name: %s" % name)
+
+    def name_to_dim(self, name):
+        for dim in self.dims:
+            if dim.name == name:
+                return dim
+        else: 
+            raise KeyError("invalid dimension name: %s" % name)
+
+    def tag_to_idx(self, tag):
+        for i, dim in enumerate(self.dims):
+            if dim.tag == tag:
+                return i
+        raise KeyError("invalid tag: %s" % tag)
+
+    def tag_to_dim(self, tag):
+        return self.dims[self.tag_to_idx(tag)]
+
+    def indices_by_tag_type(self, tag_type):
+        return [i for i, dim in enumerate(self.dims)
+                if isinstance(dim.tag, tag_type)]
+
+    def dims_by_tag_type(self, tag_type):
+        return [dim for dim in self.dims
+                if isinstance(dim.tag, tag_type)]
+
+    def ordered_dim_by_tag_type(self, tag_type):
+        result = []
+        from itertools import count
+        for i in count():
+            try:
+                dim = self.tag_to_dim(tag_type(i))
+            except KeyError:
+                return result
+            else:
+                result.append(dim)
+
+        return result
+
+    def dims_by_tag(self, tag):
+        return [dim for dim in self.dims if dim.tag == tag]
+
+    def set_dim(self, idx, new_dim):
+        return self.copy(dims=
+                self.dims[:idx] 
+                + [new_dim] 
+                + self.dims[(idx+1):])
+
+    def change_dim(self, idx, **kwargs):
+        return self.set_dim(idx, self.dims[idx].copy(**kwargs))
+
+    def move(self, from_idx, to_idx):
+        new_dims = self.dims[:idx] + self.dims[(idx+1):]
+        if from_idx > to_idx:
+            to_idx -= 1
+        new_dims.insert(to_idx, self.dims[from_idx])
+        return self.copy(dims=new_dims)
+
+
+
+        
+class LoopKernel(LoopDomain):
+    # possible attributes:
+    # - dims from LoopDomain
+    # - instructions
+    # - prefetch
+    # - schedule
+
+    @memoize_method
+    def all_indices(self):
+        return set(dim.name for dim in self.dims)
+
+    @memoize_method
+    def output_indices(self):
+        dm = DependencyMapper(include_subscripts=False)
+
+        output_indices = set()
+        for lvalue, expr in self.instructions:
+            output_indices.update(
+                    set(v.name for v in dm(lvalue)) 
+                    & self.all_indices())
+
+        return output_indices
+
+    @memoize_method
+    def output_dimensions(self):
+        return [dim for dim in self.dims if dim.name in self.output_indices()]
+
+    @memoize_method
+    def reduction_dimensions(self):
+        return [dim for dim in self.dims if dim.name not in self.output_indices()]
+
+    def grid_dim(self):
+        dims = self.ordered_dim_by_tag_type(BLOCK_IDX_TAG)
+        return [dim.length for dim in dims] + [1]*(2-len(dims))
+
+    def block_dim(self):
+        dims = self.ordered_dim_by_tag_type(THREAD_IDX_TAG)
+        return [dim.length for dim in dims] + [1]*(3-len(dims))
+
+    def thread_count(self):
+        from pytools import product
+        return product(self.block_dim())
+
+    def block_count(self):
+        from pytools import product
+        return product(self.grid_dim())
+
+    @memoize_method
+    def input_vectors(self):
+        dm = DependencyMapper(include_subscripts=False)
+
+        input_vectors = set()
+        for lvalue, expr in self.instructions:
+            input_vectors.update(
+                    set(v.name for v in dm(expr)) 
+                    - self.all_indices())
+        return input_vectors
+
+    @memoize_method
+    def output_vectors(self):
+        dm = DependencyMapper(include_subscripts=False)
+
+        output_vectors = set()
+        for lvalue, expr in self.instructions:
+            output_vectors.update(
+                    set(v.name for v in dm(lvalue)) 
+                    - self.all_indices())
+        return list(output_vectors)
+
+    def _subst_insns(self, old_var, new_expr):
+        from pymbolic.mapper.substitutor import substitute
+
+        subst_map = {old_var: new_expr}
+
+        return [(substitute(lvalue, subst_map),
+            substitute(expr, subst_map))
+            for lvalue, expr in self.instructions]
+
+    def _subst_prefetch(self, old_var, new_expr):
+        from pymbolic.mapper.substitutor import substitute
+        subst_map = {old_var: new_expr}
+
+        result = {}
+        for pf in self.prefetch.itervalues():
+            for pfdim in pf.dims:
+                if pfdim.name == old_var:
+                    raise RuntimeError("can't substitute prefetch dimension %s"
+                            % old_var)
+
+            new_pf = pf.copy(index_expr=substitute(pf.index_expr, subst_map))
+            result[pf.input_vector, new_pf.index_expr] = new_pf
+
+        return result
+
+    def substitute(self, old_var, new_expr):
+        copy = self.copy(instructions=self._subst_insns(old_var, new_expr))
+        if hasattr(self, "prefetch"):
+            copy.prefetch = self._subst_prefetch(old_var, new_expr)
+
+        if hasattr(self, "schedule"):
+            for sched_item in self.schedule:
+                if (isinstance(sched_item, LoopDimension) 
+                        and sched_item.name == old_var):
+                    raise RuntimeError("can't substitute already-scheduled variable: %s"
+                            % old_var)
+                    
+        return copy
+
+    def split_dimension(self, idx, inner_length, outer_name=None, inner_name=None,
+            outer_tag=None, inner_tag=None):
+        dim = self.dims[idx]
+
+        if outer_name is None:
+            outer_name = dim.name+"_outer"
+        if inner_name is None:
+            inner_name = dim.name+"_inner"
+
+        assert dim.length % inner_length == 0
 
         from pymbolic import var
+        tgt_expr = var(inner_name) + var(outer_name)*inner_length
+
+        return self \
+                .substitute(dim.name, tgt_expr) \
+                .copy(dims=
+                        self.dims[:idx] + [
+                            LoopDimension(
+                                name=outer_name, 
+                                length=dim.length//inner_length,
+                                tag=outer_tag),
+                            LoopDimension(
+                                name=inner_name, 
+                                length=inner_length,
+                                tag=inner_tag),
+                            ]
+                        + self.dims[(idx+1):]), tgt_expr
+
+
+
+
+def make_loop_kernel(dims, insns):
+    from pymbolic import parse
+
+    def parse_if_necessary(v):
+        if isinstance(v, str):
+            return parse(v)
+        else:
+            return v
+
+    insns = [
+            (parse_if_necessary(lvalue), 
+                parse_if_necessary(expr)) 
+            for lvalue, expr in insns]
+
+    return LoopKernel(dims=dims, instructions=insns)
+
+
+
+
+def generate_thread_index_assignment_numberings(kernel):
+    thread_idx_dim_indices = kernel.indices_by_tag_type(
+            THREAD_IDX_TAG)
+
+    if thread_idx_dim_indices:
+        from pytools import generate_unique_permutations
+
         for perm in generate_unique_permutations(
-                tuple(range(len(ti_ass)))):
-            from pytools import flatten
-            yield other_ass + list(flatten([
-                tia.copy(axis=p_i),
-                IndexSubsitution(
-                    old_variable=tia.name,
-                    new_expr=var("threadIdx."+AXES[p_i]))
-                ]
-                for tia, p_i in zip(ti_ass, perm)))
+                tuple(range(len(thread_idx_dim_indices)))):
+
+            new_kernel = kernel
+            for dim_i, thread_axis in zip(
+                    thread_idx_dim_indices,
+                    perm):
+                new_kernel = new_kernel.change_dim(
+                        dim_i, tag=THREAD_IDX_TAG(thread_axis))
+
+            yield new_kernel
+    else:
+        # nothing assigned to thread indices? not interested.
+        pass
 
 
 
 
-def generate_domain_assignments(domain, done_assignments=[],
-        output_indices=set(), no_thread_indices=set()):
-    if not domain:
-        for ass in generate_thread_index_assignment_numberings(
-                done_assignments):
-            yield ass, output_indices
+def generate_dim_assignments(kernel, idx=0,
+        no_thread_indices=set()):
+    if idx >= len(kernel.dims):
+        for knl in generate_thread_index_assignment_numberings(
+                kernel):
+            yield knl
         return
 
-    name, length = domain[0]
+    dim = kernel.dims[idx]
 
-    assert length >= 2
+    assert dim.length >= 2
 
-    props = dict(name=name, start=0, stop=length)
-
-    for ass in generate_domain_assignments(
-            domain[1:], 
-            done_assignments=(
-                done_assignments+[ForLoopAssignment(**props)]),
-            output_indices=output_indices,
+    for knl in generate_dim_assignments(kernel, idx+1,
             no_thread_indices=no_thread_indices):
-        yield ass
+        yield knl
 
     from pymbolic import var
 
-    block_idx_ass_count = sum(1 for ass in done_assignments
-            if isinstance(ass, BlockIndexAssignment))
-    if name in output_indices and block_idx_ass_count < 2 :
-        for ass in generate_domain_assignments(
-                domain[1:], 
-                done_assignments=(
-                    done_assignments+[
-                        IndexSubsitution(
-                            old_variable=name,
-                            new_expr=var("blockIdx."+AXES[
-                                block_idx_ass_count])),
-                        BlockIndexAssignment(
-                            axis=block_idx_ass_count, **props)]),
-                output_indices=output_indices,
+    block_idx_dim_count = len(kernel.dims_by_tag_type(BLOCK_IDX_TAG))
+
+    if dim.name in kernel.output_indices() \
+            and block_idx_dim_count < 2 :
+        for knl in generate_dim_assignments(
+                kernel.change_dim(idx, 
+                    tag=BLOCK_IDX_TAG(block_idx_dim_count)),
+                idx+1,
                 no_thread_indices=no_thread_indices):
-            yield ass
+            yield knl
 
     # try to assign to thread indices
-    assigned_thread_indices  = sum(1 
-            for ass in done_assignments
-            if isinstance(ass, ThreadIndexAssignment))
-    from pytools import product
-    assigned_block_size  = product(len(ass)
-            for ass in done_assignments
-            if isinstance(ass, ThreadIndexAssignment))
-    leftover_block_size = 512 // assigned_block_size
+    thread_idx_dims = kernel.dims_by_tag_type(THREAD_IDX_TAG)
+    thread_idx_dims_count = len(thread_idx_dims)
 
-    if (name in output_indices 
-            and name not in no_thread_indices
-            and assigned_thread_indices < 3 
+    from pytools import product
+    assigned_block_size  = product(tid.length
+            for tid in thread_idx_dims)
+    leftover_block_size = MAX_THREADS_PER_BLOCK // assigned_block_size
+
+    if (dim.name in kernel.output_indices()
+            and dim.name not in no_thread_indices
+            and dim.tag is None
+            and thread_idx_dims_count < 3 
             and leftover_block_size > 1):
         my_block_length = 1
-        while my_block_length < length:
+        while my_block_length < dim.length:
             my_block_length *= 2
-            if my_block_length > length:
-                my_block_length = length
+            if my_block_length > dim.length:
+                my_block_length = dim.length
 
             if my_block_length > leftover_block_size:
                 break
 
-            if length % my_block_length == 0:
-                new_name = name+"_b"
-                leftover_name = name+"_l"
-                new_length = length//my_block_length
-                
-                ass_add = [ThreadIndexAssignment(
-                    name=new_name, start=0, stop=my_block_length)]
+            if dim.length % my_block_length != 0:
+                break
 
-                if new_length > 1:
-                    domain_add = [ (leftover_name, new_length) ]
-                    ass_add.append(IndexSubsitution(
-                        old_variable=name,
-                        new_expr=(var(new_name)
-                            +my_block_length*var(leftover_name))))
-                    addl_output_indices = set([leftover_name])
-                    addl_no_thread_indices = set([leftover_name])
-                else:
-                    domain_add = []
-                    addl_output_indices = set()
-                    addl_no_thread_indices = set()
+            new_length = dim.length//my_block_length
+            
+            if new_length > 1:
+                outer_name = dim.name+"_outer"
+                inner_name = dim.name+"_inner"
 
-                for ass in generate_domain_assignments(
-                        domain_add+domain[1:], 
-                        done_assignments=(
-                            done_assignments+ass_add),
-                        output_indices=(
-                            output_indices | addl_output_indices),
+                new_kernel, tgt_expr = kernel.split_dimension(idx, 
+                            outer_name=outer_name,
+                            inner_length=my_block_length,
+                            inner_name=inner_name,
+                            inner_tag=THREAD_IDX_TAG(),
+                            )
+                for knl in generate_dim_assignments(new_kernel, idx,
                         no_thread_indices=(
-                            no_thread_indices | addl_no_thread_indices)
-                        ):
-                    yield ass
+                            no_thread_indices | set([outer_name]))):
+                    yield knl
+            else:
+                for knl in generate_dim_assignments(
+                        kernel.change_dim(idx, tag=THREAD_IDX_TAG),
+                        idx+1,
+                        no_thread_indices=no_thread_indices):
+                    yield knl
 
 
 
 
-def full_subst(subst_map, expr):
-    from pymbolic.mapper.substitutor import substitute
-    while True:
-        last_expr = expr
-        expr = substitute(expr, subst_map)
-        if last_expr == expr:
-            return expr
+# prefetch-related ------------------------------------------------------------
+def total_prefetch_size(kernel):
+    return sum(pf.size() for pf in kernel.prefetch.itervalues())
+
+class PrefetchDescriptor(Record):
+    # possible attributes:
+    # - input_vector
+    # - index_expr
+    # - dims
+
+    def size(self):
+        from pytools import product
+        return 4*product(dim.length for dim in self.dims)
+
+    @memoize_method
+    def free_variables(self):
+        return set(var.name 
+                for var in DependencyMapper()(self.index_expr)
+                ) - set(dim.name for dim in self.dims)
+
+
+
+def with_added_prefetch_dim(kernel, ivec, iexpr, dim):
+    new_prefetch = kernel.prefetch.copy()
+    if (ivec, iexpr) in new_prefetch:
+        old_pf_descr = new_prefetch[ivec, iexpr]
+        new_prefetch[ivec, iexpr] = old_pf_descr.copy(
+                dims=old_pf_descr.dims + [dim])
+    else:
+        new_prefetch[ivec, iexpr] = PrefetchDescriptor(
+                input_vector=ivec,
+                index_expr=iexpr,
+                dims=[dim])
+
+    new_kernel = kernel.copy(prefetch=new_prefetch)
+
+    if total_prefetch_size(new_kernel) <= SMEM_BYTES:
+        return new_kernel
+    else:
+        return None
 
 
 
 
-class TexturingCCodeMapper(CCodeMapper):
-    def __init__(self, input_vectors):
+def generate_prefetch_sizes(kernel, ivec, iexpr, prefetch_dims):
+    if not prefetch_dims:
+        yield kernel
+        return
+
+    dim = prefetch_dims[0]
+
+    if isinstance(dim.tag, THREAD_IDX_TAG):
+        new_kernel = with_added_prefetch_dim(kernel, ivec, iexpr, dim)
+        if new_kernel is not None:
+            for knl in generate_prefetch_sizes(
+                    new_kernel, ivec, iexpr, prefetch_dims[1:]):
+                yield knl
+    else:
+        prefetch_length = 2
+        while prefetch_length < dim.length:
+            if prefetch_length > dim.length:
+                prefetch_length = dim.length
+
+            if dim.length % prefetch_length != 0:
+                break
+
+            outer_length = dim.length//prefetch_length
+            if outer_length > 1:
+                # split the dimension, then generate prefetch
+                inner_name = dim.name+"_prefetch"
+
+                new_kernel, tgt_expr = kernel.split_dimension(
+                        kernel.name_to_idx(dim.name),
+                        inner_length=prefetch_length,
+                        inner_name=inner_name)
+
+                from pymbolic import var
+                from pymbolic.mapper.substitutor import substitute
+
+                new_iexpr = substitute(iexpr, {var(dim.name): tgt_expr})
+                new_kernel = with_added_prefetch_dim(
+                        new_kernel, ivec, new_iexpr,
+                        LoopDimension(inner_name, prefetch_length))
+
+                if new_kernel is not None:
+                    for knl in generate_prefetch_sizes(new_kernel, 
+                            ivec, new_iexpr, prefetch_dims[1:]):
+                        yield knl
+            else:
+                # prefetch the whole dimension
+                new_kernel = with_added_prefetch_dim(kernel, ivec, iexpr, dim)
+                if new_kernel is not None:
+                    for knl in generate_prefetch_sizes(
+                            new_kernel, ivec, iexpr, prefetch_dims[1:]):
+                        yield knl
+
+            prefetch_length *= 2
+
+
+
+
+class IndexExpressionCollector(CombineMapper):
+    def __init__(self, tgt_vector_name):
+        self.tgt_vector_name = tgt_vector_name
+
+    def combine(self, values):
+        from pytools import flatten
+        return set(flatten(values))
+
+    def map_constant(self, expr):
+        return set()
+
+    def map_algebraic_leaf(self, expr):
+        return set()
+
+    def map_subscript(self, expr):
+        from pymbolic.primitives import Variable
+        assert isinstance(expr.aggregate, Variable)
+
+        if expr.aggregate.name == self.tgt_vector_name:
+            return set([expr.index])
+        else:
+            return CombineMapper.map_subscript(self, expr)
+
+
+
+
+def generate_kernel_prefetch_choices(ivec, kernel):
+    from pytools import flatten
+    index_exprs = set(flatten(
+        IndexExpressionCollector(ivec)(expression)
+        for lvalue, expression in kernel.instructions
+        ))
+
+    for index_expr in index_exprs:
+        dm = DependencyMapper()
+
+        involved_dims = list(set(kernel.name_to_dim(idx.name)
+            for idx in dm(index_expr)))
+
+        prefetch_dims = [dim
+                for dim in involved_dims
+                if isinstance(dim.tag, THREAD_IDX_TAG)]
+        uncertain_dims = [dim
+                for dim in involved_dims
+                if not isinstance(dim.tag, (THREAD_IDX_TAG, BLOCK_IDX_TAG))]
+
+        from pytools import generate_nonnegative_integer_tuples_below as gnitt
+        for flags in gnitt(2, len(uncertain_dims)):
+            my_prefetch_dims = prefetch_dims + [
+                    udim for udim, flag in zip(uncertain_dims, flags)
+                    if flag]
+            for knl in generate_prefetch_sizes(kernel, 
+                    ivec, index_expr, my_prefetch_dims):
+                yield knl
+
+
+
+
+
+def generate_all_prefetching_kernels(kernel):
+    kernel = kernel.copy(prefetch={})
+    for ivec in kernel.input_vectors():
+        for knl in generate_kernel_prefetch_choices(ivec, kernel):
+            yield knl
+
+
+
+
+
+
+# loop scheduling -------------------------------------------------------------
+def generate_loop_schedules(kernel):
+    prev_schedule = getattr(kernel, "schedule", 
+            kernel.dims_by_tag_type(BLOCK_IDX_TAG)
+            + kernel.dims_by_tag_type(THREAD_IDX_TAG))
+
+    already_scheduled = set(sch_item 
+            for sch_item in prev_schedule
+            if isinstance(sch_item, LoopDimension))
+
+    # have a schedulable prefetch? load, schedule it
+    scheduled_names = set(dim.name for dim in already_scheduled)
+
+    had_usable_prefetch = False
+    scheduled_thread_dim_names = set(
+            dim.name for dim in already_scheduled
+            if isinstance(dim.tag, THREAD_IDX_TAG))
+
+    for pf in kernel.prefetch.itervalues():
+        # already scheduled? never mind then.
+        if pf in prev_schedule:
+            continue
+
+        # a free variable not known yet? then we're not ready
+        if not pf.free_variables() <= scheduled_names:
+            continue
+
+        # a prefetch variable already scheduled, but not borrowable?
+        # (only thread index variables are borrowable)
+        pf_loop_names = set(dim.name for dim in pf.dims)
+
+        if pf_loop_names & (already_scheduled - scheduled_thread_dim_names):
+            # dead end: we won't be able to schedule this prefetch
+            # in this branch. at least one of its loop dimensions
+            # was already scheduled, and that dimension is not 
+            # borrowable.
+            print "UNSCHEDULABLE:"
+            print_kernel_info(kernel)
+            raw_input()
+            return
+
+        new_kernel = kernel.copy(schedule=prev_schedule+[pf])
+        for knl in generate_loop_schedules(new_kernel):
+            had_usable_prefetch = True
+            yield knl
+
+    if had_usable_prefetch:
+        return
+
+    # Build set of potentially schedulable variables
+    schedulable = set(kernel.dims)
+
+    # Don't re-schedule already scheduled variables
+    schedulable -= already_scheduled
+
+    # Don't schedule reduction variables until all output
+    # variables are taken care of. Once they are, schedule
+    # output writing.
+    serial_output_dims = set(od for od in kernel.output_dimensions() 
+            if od.tag is None)
+
+    if not serial_output_dims <= already_scheduled:
+        schedulable -= set(kernel.reduction_dimensions())
+    else:
+        if not any(isinstance(sch_item, WriteOutput) 
+                for sch_item in prev_schedule):
+            kernel = kernel.copy(
+                    schedule=prev_schedule + [WriteOutput()])
+            prev_schedule = kernel.schedule
+
+    # Don't schedule variables that are prefetch axes 
+    # for not-yet-scheduled prefetches.
+    unsched_prefetch_axes = set(dim
+            for pf in kernel.prefetch.itervalues()
+            if pf not in prev_schedule
+            for dim in pf.dims)
+    schedulable -= unsched_prefetch_axes
+
+    if schedulable:
+        # have a schedulable variable? schedule a loop for it, recurse
+        for dim in schedulable:
+            new_kernel = kernel.copy(schedule=prev_schedule+[dim])
+            for knl in generate_loop_schedules(new_kernel):
+                yield knl
+    else:
+        # all loop dimensions and prefetches scheduled?
+        # great! yield the finished product if it is complete
+
+        all_dims_scheduled = len(already_scheduled) == len(kernel.dims)
+        all_pf_scheduled =  len(set(sch_item for sch_item in prev_schedule
+            if isinstance(sch_item, PrefetchDescriptor))) == len(kernel.prefetch)
+        output_scheduled = len(set(sch_item for sch_item in prev_schedule
+            if isinstance(sch_item, WriteOutput))) == 1
+
+        if all_dims_scheduled and all_pf_scheduled and output_scheduled:
+            yield kernel
+    
+    
+
+
+
+# code generation -------------------------------------------------------------
+class LoopyCCodeMapper(CCodeMapper):
+    def __init__(self, kernel, get_prefetch_name):
         CCodeMapper.__init__(self)
-        self.input_vectors = input_vectors
+        self.kernel = kernel
+        self.get_prefetch_name = get_prefetch_name
 
     def map_subscript(self, expr, enclosing_prec):
         from pymbolic.primitives import Variable
         if (isinstance(expr.aggregate, Variable)
-                and expr.aggregate.name in self.input_vectors):
-            return "tex1Dfetch(tex_%s, %s)" % (
-                    expr.aggregate.name,
-                    self.rec(expr.index, PREC_NONE))
+                and expr.aggregate.name in self.kernel.input_vectors()):
+            try:
+                pf = self.kernel.prefetch[expr.aggregate.name, expr.index]
+            except KeyError:
+                return "tex1Dfetch(tex_%s, %s)" % (
+                        expr.aggregate.name,
+                        self.rec(expr.index, PREC_NONE))
+            else:
+                return self.get_prefetch_name(pf)+"".join(
+                        "[%s]" % dim.name for dim in pf.dims)
         else:
             return CCodeMapper.map_subscript(self, expr, enclosing_prec)
 
 
 
 
-class KernelVariant:
-    def __init__(self, 
-            idx_assignments, transformed_output_indices, kernel):
-        self.subst_map = dict((s.old_variable, s.new_expr) 
-                for s in idx_assignments
-                if isinstance(s, IndexSubsitution))
 
-        self.idx_assignments = idx_assignments
-        self.output_indices = transformed_output_indices
-
-        self.insns = [
-                (full_subst(self.subst_map, lvalue),
-                    full_subst(self.subst_map, expr))
-                for lvalue, expr in kernel.insns]
-
-        self.for_loops = [ass for ass in self.idx_assignments
-                if isinstance(ass, ForLoopAssignment)]
-        self.output_loops = [fl for fl in self.for_loops 
-                if fl.name in self.output_indices]
-        self.reduction_loops = [fl for fl in self.for_loops 
-                if fl.name not in self.output_indices]
-
-        self.kernel = kernel
-
-        find_reuse(self, self.insns[0][1])
-        raw_input()
-
-    @memoize_method
-    def thread_axes(self):
-        thread_axes = [None]*3
-        for tia in [ass for ass in self.idx_assignments
-                if isinstance(ass, ThreadIndexAssignment)]:
-            thread_axes[tia.axis] = tia
-
-        return thread_axes
-
-    @memoize_method
-    def block_axes(self):
-        block_axes = [None]*2
-        for bia in [ass for ass in self.idx_assignments
-                if isinstance(ass, BlockIndexAssignment)]:
-            block_axes[bia.axis] = bia
-        return block_axes
-
-    def block_size(self):
-        return tuple(
-                1 if bia is None else len(bia)
-                for bia in self.thread_axes())
-
-    def grid_size(self):
-        return tuple(
-                1 if gia is None else len(gia)
-                for gia in self.block_axes())
-
-    @memoize_method
-    def code(self):
-        from codepy.cgen import FunctionBody, FunctionDeclaration, \
-                Typedef, POD, Value, Pointer, Module, Block, \
-                Initializer, Assign, Statement, For
-
-        from pymbolic.primitives import Subscript
-        ccm = TexturingCCodeMapper(self.kernel.input_vectors)
-
-        inner = Block([])
-        for lvalue, expr in self.insns:
-            assert isinstance(lvalue, Subscript)
-            name = lvalue.aggregate.name
-            inner.append(Statement("tmp_%s += %s"
-                % (name, ccm(expr, PREC_NONE))))
-
-        for loop in self.reduction_loops:
-            inner = For(
-                    "int %s = %s" % (loop.name, loop.start),
-                    "%s < %s" % (loop.name, loop.stop),
-                    "++%s" % loop.name, inner)
-
-        inner = Block(
-                [Initializer(POD(numpy.float32, 
-                    "tmp_"+lvalue.aggregate.name), 0)
-                    for lvalue, expr in self.insns]
-                +[inner]+
-                [Assign(
-                    ccm(lvalue, PREC_NONE),
-                    "tmp_"+lvalue.aggregate.name)
-                    for lvalue, expr in self.insns])
-
-        for loop in self.output_loops:
-            inner = For(
-                    "int %s = %s" % (loop.name, loop.start),
-                    "%s < %s" % (loop.name, loop.stop),
-                    "++%s" % loop.name, inner)
-
-        from codepy.cgen.cuda import CudaGlobal
-
-        mod = Module()
-
-        for v in self.kernel.input_vectors:
-            mod.append(
-                    Value("texture<float, 1, cudaReadModeElementType>",
-                        "tex_"+v));
-
-        mod.append(
-            FunctionBody(
-                CudaGlobal(FunctionDeclaration(
-                    Value("void", "loopy_kernel"),
-                    [Pointer(POD(numpy.float32, name)) 
-                        for name in self.kernel.output_vectors])),
-                Block([inner])))
-
-        return str(mod)
-
-    def func_and_texrefs(self):
-        mod = compiler.SourceModule(self.code())
-        texref_lookup = dict(
-                (iv, mod.get_texref("tex_"+iv))
-                for iv in self.kernel.input_vectors)
-        func = mod.get_function("loopy_kernel")
-        func.prepare("P" * len(self.kernel.output_vectors),
-                self.block_size(), texrefs=texref_lookup.values())
-
-        return func, texref_lookup
+class WriteOutput(Record):
+    pass
 
 
 
 
-class ReuseDetectingEvaluationMapper(EvaluationMapper):
-    def __init__(self, context):
-        EvaluationMapper.__init__(self, context)
-        self.reuse_map = {}
-        # variable -> index -> [count, exprs]
-
-        self.max_reuse_map = {}
-
-    def map_subscript(self, expr):
-        from pymbolic.primitives import Variable
-        if (isinstance(expr.aggregate, Variable)):
-            var_name = expr.aggregate.name
-            var_reuse_dict = self.reuse_map.setdefault(
-                    var_name, {})
-            idx_reuse_data = var_reuse_dict.setdefault(
-                    self.rec(expr.index), [0, []])
-            idx_reuse_data[0] += 1
-            idx_reuse_data[1].append(
-                (expr.index, self.context.copy()))
-
-            self.max_reuse_map[var_name] = max(
-                    self.max_reuse_map.get(var_name, 0),
-                    idx_reuse_data[0])
-
-            return 0
-        else:
-            return EvaluationMapper.map_subscript(self, expr)
-        
-
-
-
-def find_reuse(kv, expr):
-    print expr
-
-    t_axes_names = ["threadIdx."+AXES[i] 
-            for i, ta in enumerate(kv.thread_axes()) if ta is not None]
-
-    context = dict(("blockIdx."+AXES[i], 0) 
-            for i, bia in enumerate(kv.block_axes()) if bia is not None)
-
-    context.update(dict(
-        (ol.name, 0) for ol in kv.output_loops))
-
-    redloop_names, redloop_bounds = zip(*[
-        (fl.name, min(16, len(fl))) for fl in kv.reduction_loops
-        ])
-
-    from pytools import generate_nonnegative_integer_tuples_below as gnitb
-    mapper = ReuseDetectingEvaluationMapper(context)
-    for rli in gnitb(redloop_bounds):
-        mapper.context.update(dict(zip(redloop_names, rli)))
-        for ti in gnitb(kv.block_size()):
-            mapper.context.update(dict(zip(t_axes_names, ti)))
-            mapper(expr)
-
-    for var, reuse in mapper.reuse_map.iteritems():
-        max_reuse = mapper.max_reuse_map[var]
-        if max_reuse == 1:
+def make_fetch_index_expr(kernel, exclude):
+    from pymbolic import var
+    expr = None
+    for dim in kernel.ordered_dim_by_tag_type(THREAD_IDX_TAG)[::-1]:
+        if dim in exclude:
             continue
-        print "VARIABLE %s max re-use: %d" % (var, max_reuse)
-        for i, (reuse_count, reuse_info) in reuse.iteritems():
-            print "  ", i, reuse_count
-            for idx_expr, ctx in reuse_info:
-                print "    %s | %s" % (idx_expr, ctx)
+
+        if expr is None:
+            expr = var("threadIdx." + AXES[dim.tag.axis])
+        else:
+            expr = expr*dim.length + var("threadIdx." + AXES[dim.tag.axis])
+
+    return expr
 
 
 
 
-class LoopyKernel:
-    def __init__(self, domain, insns, bogus_launcher, flop_count):
-        from pymbolic import parse
-        self.insns = [(parse(lvalue), parse(expr)) 
-                for lvalue, expr in insns]
+def generate_code(kernel):
+    from codepy.cgen import FunctionBody, FunctionDeclaration, \
+            Typedef, POD, Value, Pointer, Module, Block, \
+            Initializer, Assign, Statement, For, ArrayOf, \
+            Define, If, Line, Comment
 
-        from pymbolic.mapper.dependency import DependencyMapper
-        dm = DependencyMapper(include_subscripts=False)
+    from codepy.cgen.cuda import CudaGlobal, CudaShared
 
-        from pymbolic import var
-        indices = set(idx[0] for idx in domain)
+    S = Statement
 
-        self.output_indices = set()
-        for lvalue, expr in self.insns:
-            self.output_indices.update(
-                    set(v.name for v in dm(lvalue)) 
-                    & all_indices)
+    from pymbolic.primitives import Subscript
+    from pymbolic import var
 
-        self.input_vectors = set()
-        self.output_vectors = set()
-        for lvalue, expr in self.insns:
-            self.input_vectors.update(
-                    set(v.name for v in dm(expr)) 
-                    - all_indices)
-            self.output_vectors.update(
-                    set(v.name for v in dm(lvalue)) 
-                    - all_indices)
+    def get_prefetch_name(pf):
+        try:
+            return prefetch_names[pf]
+        except KeyError:
+            nm = "prefetch_%s_%d" % (pf.input_vector, len(prefetch_names))
+            prefetch_names[pf] = nm
+            return nm
 
-        # these actually need to be ordered
-        self.output_vectors = list(self.output_vectors)
+    prefetch_names = {}
 
-        from pytools import product
+    ccm = LoopyCCodeMapper(kernel, get_prefetch_name)
 
-        timings = []
-        for ass, transformed_output_indices in \
-                generate_domain_assignments(domain, 
-                        output_indices=self.output_indices):
-            kv = KernelVariant(
-                    ass, transformed_output_indices, self)
-            if product(kv.block_size()) >= 128:
-                func, texref_lookup = kv.func_and_texrefs()
+    inner = Block([])
+    for lvalue, expr in kernel.instructions:
+        assert isinstance(lvalue, Subscript)
+        name = lvalue.aggregate.name
+        inner.append(S("tmp_%s += %s"
+            % (name, ccm(expr, PREC_NONE))))
 
-                for i in range(1):
-                    bogus_launcher(kv.grid_size(), func, texref_lookup)
-                evt_start = cuda.Event()
-                evt_end = cuda.Event()
-                evt_start.record()
-                for i in range(2):
-                    bogus_launcher(kv.grid_size(), func, texref_lookup)
-                evt_end.record()
-                evt_end.synchronize()
+    thread_count = kernel.thread_count()
 
-                elapsed = evt_end.time_since(evt_start)*1e-3
-                
-                print "-----------------------------------------------"
-                print "grid", kv.grid_size()
-                print "block", kv.block_size
-                print
-                print kv.code()
-                print "-----------------------------------------------"
-                print "time: %f" % elapsed
-                print "gflops/s: %f" % (flop_count/elapsed/1e9)
-                print "-----------------------------------------------"
-                timings.append(("%s %s" % (kv.grid_size(), kv.block_size()), elapsed))
+    for sched_item in kernel.schedule[::-1]:
+        if isinstance(sched_item, LoopDimension):
+            dim = sched_item
+            if dim.tag is None:
+                inner = For(
+                        "int %s = 0" % dim.name,
+                        "%s < %s" % (dim.name, dim.length),
+                        "++%s" % dim.name, inner)
+
+        elif isinstance(sched_item, WriteOutput):
+            inner = Block(
+                    [Initializer(POD(numpy.float32, 
+                        "tmp_"+lvalue.aggregate.name), 0)
+                        for lvalue, expr in kernel.instructions]
+                    +[inner]+
+                    [Assign(
+                        ccm(lvalue, PREC_NONE),
+                        "tmp_"+lvalue.aggregate.name)
+                        for lvalue, expr in kernel.instructions])
+        elif isinstance(sched_item, PrefetchDescriptor):
+            pf = sched_item
+            pf_name = get_prefetch_name(pf)
+
+            smem_pf_array = POD(numpy.float32, pf_name)
+            for dim in pf.dims:
+                l = dim.length
+                smem_pf_array = ArrayOf(smem_pf_array, l)
+            smem_pf_array = CudaShared(smem_pf_array)
+
+            from pytools import partition2
+            thread_pf_dims, non_thread_pf_dims = partition2(
+                    (isinstance(dim.tag, THREAD_IDX_TAG), dim)
+                    for dim in pf.dims)
+
+            fetch_block = Block([
+                    Initializer(
+                        POD(numpy.uint32, "fetch_idx"),
+                        make_fetch_index_expr(kernel, thread_pf_dims))
+                    ])
+                        
+            # Prefetch needs to take types of dimensions into account:
+            #
+            # - non-thread prefetch dimensions (1)
+            # - thread prefetch dimensions (2)
+            # - non-prefetch thread dimensions (3)
+            #
+            # Type (1) comprises a pool of fetches that must be efficiently
+            # fetched with the "extra parallelism" available through (3).
+
+            from pytools import product
+            non_thread_pf_size = product(dim.length for dim in non_thread_pf_dims)
+            thread_pf_size = product(dim.length for dim in thread_pf_dims)
+            non_pf_thread_size = product(
+                    dim.length for dim in kernel.dims_by_tag_type(THREAD_IDX_TAG)
+                    if dim not in thread_pf_dims)
+
+            # generate indexing substitution map and smem assignment indices
+            pf_indices = []
+            pf_idx_subst_map = {}
+            prev_dim_sizes = 1
+            for i, pf_dim in enumerate(pf.dims):
+                if isinstance(pf_dim.tag, THREAD_IDX_TAG):
+                    dim_expr = "threadIdx.%s" % AXES[pf_dim.tag.axis]
+                    pf_indices.append(dim_expr)
+                    pf_idx_subst_map[pf_dim.name] = var(dim_expr)
+                else:
+                    dim_expr = var("fetch_idx") / prev_dim_sizes
+
+                    if [pf_subdim 
+                            for pf_subdim in pf.dims[i+1:]
+                            if isinstance(pf_subdim, THREAD_IDX_TAG)]:
+                        dim_expr = dim_expr % pf_dim.length
+
+                    pf_indices.append(str(dim_expr))
+                    pf_idx_subst_map[pf_dim.name] = dim_expr
+                    prev_dim_sizes *= pf_dim.length
+
+            assert prev_dim_sizes == non_thread_pf_size
+
+            # generate smem assignment statement
+            from pymbolic.mapper.substitutor import substitute
+            pf_assignment = Assign(
+                    pf_name + "".join("[%s]" % dexpr 
+                        for dexpr in pf_indices),
+                    "tex1Dfetch(tex_%s, %s)" 
+                    % (pf.input_vector,
+                        substitute(pf.index_expr, pf_idx_subst_map))
+                    )
+
+            # generate fetch loop
+
+            # fetch_base and fetch_idx neglect thread_pf_size
+            fetch_base = 0
+            while fetch_base + non_pf_thread_size <= non_thread_pf_size:
+                fetch_block.append(pf_assignment)
+                if fetch_base + non_pf_thread_size < non_thread_pf_size:
+                    fetch_block.append(
+                            S("fetch_idx += %d" % non_pf_thread_size))
+                fetch_base += non_pf_thread_size
+            if fetch_base < non_thread_pf_size:
+                from pytools import product
+                fetch_block.append(
+                        If("fetch_idx < %d" % non_thread_pf_size,
+                            pf_assignment))
+
+            inner = Block(
+                    [
+                    Comment("prefetch dimensions: " + ", ".join(
+                        "%s[%d]" % (pfdim.name, pfdim.length) for pfdim in pf.dims)),
+                    Comment("  ... direct-thread prefetch dims: " + ", ".join(
+                        pfdim.name for pfdim in thread_pf_dims)),
+                    Line(),
+                    S("__syncthreads()"),
+                    smem_pf_array,
+                    fetch_block,
+                    S("__syncthreads()"),
+                    Line(),
+                    ]+[inner])
+
+    mod = Module()
+
+    for v in kernel.input_vectors():
+        mod.append(
+                Value("texture<float, 1, cudaReadModeElementType>",
+                    "tex_"+v))
+
+    mod.extend([Line()]
+            + [Define(dim.name, "blockIdx.%s /* 0..%d */"
+                % (AXES[dim.tag.axis], dim.length-1))
+                for dim in kernel.dims_by_tag_type(BLOCK_IDX_TAG)]
+            + [Define(dim.name, "threadIdx.%s /* 0..%d */"
+                % (AXES[dim.tag.axis], dim.length-1))
+                for dim in kernel.dims_by_tag_type(THREAD_IDX_TAG)]
+            + [Line()])
+
+    from pymbolic import var
+    expr = None
+    for i, block_axis_length in list(enumerate(kernel.block_dim()))[::-1]:
+        if expr is None:
+            if block_axis_length != 1:
+                expr = var("threadIdx." + AXES[i])
+        else:
+            expr = expr*block_axis_length + var("threadIdx." + AXES[i])
+
+    mod.append(
+        FunctionBody(
+            CudaGlobal(FunctionDeclaration(
+                Value("void", "loopy_kernel"),
+                [Pointer(POD(numpy.float32, name)) 
+                    for name in kernel.output_vectors()])),
+            Block([inner])))
+
+    return str(mod)
+
+
+
+
+# debugging -------------------------------------------------------------------
+def print_kernel_info(knl):
+    print "PREFETCH", total_prefetch_size(knl)
+    for pf in knl.prefetch.itervalues():
+        print "   %s[%s]: %s" % (pf.input_vector, pf.index_expr, pf.dims)
+    print
+    print "Scheduling: ---------------------"
+    for sched_item in knl.schedule:
+        print sched_item
+    print
+
+    for ld in knl.dims:
+        print ld
+    print
+    for t, e in knl.instructions:
+        print "%s <- %s" % (t, e)
+
+
+
+
+# speed measurement -----------------------------------------------------------
+def make_gpu_function_and_texrefs(kernel, code):
+    mod = compiler.SourceModule(code)
+    texref_lookup = dict(
+            (iv, mod.get_texref("tex_"+iv))
+            for iv in kernel.input_vectors())
+    func = mod.get_function("loopy_kernel")
+    func.prepare("P" * len(kernel.output_vectors()),
+            kernel.block_dim(), texrefs=texref_lookup.values())
+
+    return func, texref_lookup
+
+
+
+
+class CompiledKernel:
+    def __init__(self, kernel):
+        self.kernel = kernel
+        self.code = generate_code(kernel)
+        self.gpu_function, self.texref_lookup = \
+                make_gpu_function_and_texrefs(kernel, self.code)
+
+    def time_run(self, launcher, warmup_rounds=1, timing_rounds=2):
+        for i in range(warmup_rounds):
+            launcher(self.kernel.grid_dim(), 
+                    self.gpu_function, 
+                    self.texref_lookup)
+        evt_start = cuda.Event()
+        evt_end = cuda.Event()
+        evt_start.record()
+        for i in range(timing_rounds):
+            launcher(self.kernel.grid_dim(), 
+                    self.gpu_function, 
+                    self.texref_lookup)
+        evt_end.record()
+        evt_end.synchronize()
+
+        return evt_end.time_since(evt_start)*1e-3
+
+
+
+
+# driver ----------------------------------------------------------------------
+def generate_all_kernels(orig_kernel, min_threads=None, min_blocks=None):
+    for knl in generate_dim_assignments(orig_kernel):
+        if min_threads is not None and knl.thread_count() < min_threads:
+            continue
+        if min_blocks is not None and knl.block_count() < min_blocks:
+            continue
 
         if False:
-            from matplotlib.pyplot import plot, xticks, savefig
-            timings.sort(key=lambda e: e[1])
-            labels, times = zip(*timings)
-            times = numpy.array(times)
-            flops = flop_count/times
-
-            x_points = arange(len(times))
-            plot(x_points, times, "o")
-            xticks(x_points, labels)
-            savefig("times.png")
-
-            clf()
-            plot(x_points, flops, "o")
-            xticks(x_points, labels)
-            savefig("times.png")
-
-            print "%d solutions" % soln_count
+            for d in knl.dims:
+                print d
+            print "-------------------------------------------------------"
+            raw_input()
+        else:
+            for pf_knl in generate_all_prefetching_kernels(knl):
+                for sch_knl in generate_loop_schedules(pf_knl):
+                    yield sch_knl
 
 
-    def __call__(self, **vars):
-        pass
+
+
+def drive_timing_run(kernel_generator, launch, flop_count=None):
+    soln_count = 0
+    for kernel in kernel_generator:
+
+        compiled = CompiledKernel(kernel)
+        elapsed = compiled.time_run(launch)
+
+        print "-----------------------------------------------"
+        print "SOLUTION #%d" % soln_count
+        print "-----------------------------------------------"
+        print compiled.code
+        print "-----------------------------------------------"
+        print "time: %f" % elapsed
+        if flop_count is not None:
+            print "gflops/s: %f" % (flop_count/elapsed/1e9)
+        print "-----------------------------------------------"
+
+        soln_count += 1
+
+    print "%d solutions" % soln_count
+
+
+
+def show_kernel_codes(kernel_generator):
+    soln_count = 0
+
+    for kernel in kernel_generator:
+        print "-----------------------------------------------"
+        print "SOLUTION #%d" % soln_count
+        print "-----------------------------------------------"
+        print generate_code(kernel)
+        soln_count += 1
+
+    print "%d solutions" % soln_count
 
 
 
@@ -486,27 +1053,43 @@ class LoopyKernel:
 
 def main():
     n = 16*34
-    if have_cuda:
-        a = curandom.rand((n, n))
-        b = curandom.rand((n, n))
-        c = gpuarray.empty_like(a)
+    from pymbolic import var
+    a, b, c, i, j, k = [var(s) for s in "abcijk"]
 
-    def bogus_launcher(grid, kernel, texref_lookup):
-        a.bind_to_texref_ext(texref_lookup["a"])
-        b.bind_to_texref_ext(texref_lookup["b"])
-        kernel.prepared_call(grid, c.gpudata)
+    k = make_loop_kernel([
+        LoopDimension("i", n),
+        LoopDimension("j", n),
+        LoopDimension("k", n),
+        ], [ 
+        (c[i+n*j], a[i+n*k]*b[k+n*j]) 
+        ])
 
-    k = LoopyKernel([
-        ("i", n),
-        ("j", n),
-        ("k", n),
-        ],
-        [ ("c[i+16*34*j]", "a[i+16*34*k]*b[k+16*34*j]") ],
-        bogus_launcher,
-        flop_count=2*n**3)
+    gen_kwargs = {
+            "min_threads": 128,
+            "min_blocks": 32,
+            }
+
+    if True and HAVE_CUDA:
+        if HAVE_CUDA:
+            a = curandom.rand((n, n))
+            b = curandom.rand((n, n))
+            c = gpuarray.empty_like(a)
+
+        def launcher(grid, kernel, texref_lookup):
+            a.bind_to_texref_ext(texref_lookup["a"])
+            b.bind_to_texref_ext(texref_lookup["b"])
+            kernel.prepared_call(grid, c.gpudata)
+
+        drive_timing_run(
+                generate_all_kernels(k, **gen_kwargs), 
+                launcher, 2*n**3)
+    else:
+        show_kernel_codes(generate_all_kernels(k, **gen_kwargs))
+
 
 
 
 
 if __name__ == "__main__":
     main()
+
