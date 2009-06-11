@@ -229,6 +229,15 @@ class LoopKernel(LoopDomain):
             substitute(expr, subst_map))
             for lvalue, expr in self.instructions]
 
+    def is_prefetch_variable(self, varname):
+        if hasattr(self, "prefetch"):
+            for pf in self.prefetch.itervalues():
+                for pfdim in pf.dims:
+                    if pfdim.name == varname:
+                        return True
+
+        return False
+
     def _subst_prefetch(self, old_var, new_expr):
         from pymbolic.mapper.substitutor import substitute
         subst_map = {old_var: new_expr}
@@ -467,7 +476,8 @@ def generate_prefetch_sizes(kernel, ivec, iexpr, prefetch_dims):
 
     dim = prefetch_dims[0]
 
-    if isinstance(dim.tag, THREAD_IDX_TAG):
+    if (isinstance(dim.tag, THREAD_IDX_TAG) 
+            or kernel.is_prefetch_variable(dim.name)):
         new_kernel = with_added_prefetch_dim(kernel, ivec, iexpr, dim)
         if new_kernel is not None:
             for knl in generate_prefetch_sizes(
@@ -543,7 +553,7 @@ class IndexExpressionCollector(CombineMapper):
 
 
 
-def generate_kernel_prefetch_choices(ivec, kernel):
+def generate_single_vector_kernel_prefetch_choices(kernel, ivec):
     from pytools import flatten
     index_exprs = set(flatten(
         IndexExpressionCollector(ivec)(expression)
@@ -576,10 +586,25 @@ def generate_kernel_prefetch_choices(ivec, kernel):
 
 
 
+def generate_kernel_prefetch_choices(kernel, ivecs):
+    if ivecs:
+        for knl in generate_single_vector_kernel_prefetch_choices(kernel, ivecs[0]):
+            for subknl in generate_kernel_prefetch_choices(knl, ivecs[1:]):
+                yield subknl
+    else:
+        yield kernel
+
+
+
+
 def generate_all_prefetching_kernels(kernel):
     kernel = kernel.copy(prefetch={})
-    for ivec in kernel.input_vectors():
-        for knl in generate_kernel_prefetch_choices(ivec, kernel):
+
+    from pytools import generate_nonnegative_integer_tuples_below as gnitt
+    ivecs = kernel.input_vectors()
+    for flags in gnitt(2, len(ivecs)):
+        for knl in generate_kernel_prefetch_choices(kernel,
+                [ivec for flag, ivec in zip(flags, ivecs) if flag]):
             yield knl
 
 
@@ -971,7 +996,7 @@ class CompiledKernel:
         self.gpu_function, self.texref_lookup = \
                 make_gpu_function_and_texrefs(kernel, self.code)
 
-    def time_run(self, launcher, warmup_rounds=1, timing_rounds=2):
+    def time_run(self, launcher, warmup_rounds=2, timing_rounds=5):
         for i in range(warmup_rounds):
             launcher(self.kernel.grid_dim(), 
                     self.gpu_function, 
@@ -986,7 +1011,7 @@ class CompiledKernel:
         evt_end.record()
         evt_end.synchronize()
 
-        return evt_end.time_since(evt_start)*1e-3
+        return evt_end.time_since(evt_start)*1e-3/timing_rounds
 
 
 
