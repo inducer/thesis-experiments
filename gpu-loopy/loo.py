@@ -7,6 +7,17 @@ from pymbolic.mapper.c_code import CCodeMapper
 from pymbolic.mapper.stringifier import PREC_NONE
 from pymbolic.mapper import CombineMapper
 
+
+
+# TODO: Correctness checking
+# TODO: More freedom for data types of input and output vectors
+# TODO: Try different kernels
+# TODO: Non-multiple loop splits
+
+
+
+
+
 SMEM_BYTES = 16384
 MAX_THREADS_PER_BLOCK = 512
 
@@ -434,6 +445,7 @@ class PrefetchDescriptor(Record):
     # - input_vector
     # - index_expr
     # - dims
+    # - dim_storage_lengths
 
     def size(self):
         from pytools import product
@@ -586,6 +598,48 @@ def generate_single_vector_kernel_prefetch_choices(kernel, ivec):
 
 
 
+def optimize_prefetch(kernel):
+    new_prefetch = {}
+
+    pf_list = kernel.prefetch.values()
+
+    from pytools import partition2, product
+
+    for i_pf, pf in enumerate(pf_list):
+        # reorder to get threadIdx.x to the bottom
+        thread_pf_dims, non_thread_pf_dims = partition2(
+                (isinstance(pfdim.tag, THREAD_IDX_TAG), pfdim)
+                for pfdim in pf.dims)
+        thread_pf_dims.sort(key=lambda pfdim: pfdim.tag.axis)
+
+        # try and avoid bank conflicts
+        pfdims = non_thread_pf_dims+thread_pf_dims[::-1]
+        dim_storage_lengths = [pfdim.length for pfdim in pfdims]
+
+        if thread_pf_dims[0].tag.axis == 0:
+            tx_dim = thread_pf_dims[0]
+
+            # see if we can afford the smem expense in avoiding bank conflicts
+            other_pf_sizes = sum(opf.size() 
+                    for opf in pf_list[:i_pf]+pf_list[i_pf+1:])
+            other_dim_sizes = 4*product(odim.length
+                    for odim in thread_pf_dims[1:]+non_thread_pf_dims)
+
+            if (tx_dim.length % 2 == 0 
+                    and other_pf_sizes+other_dim_sizes*(tx_dim.length+1) 
+                    < SMEM_BYTES):
+                dim_storage_lengths[-1] += 1
+
+        new_prefetch[pf.input_vector, pf.index_expr] = \
+                pf.copy(dims=pfdims, dim_storage_lengths=dim_storage_lengths)
+
+    return kernel.copy(prefetch=new_prefetch)
+
+
+
+
+
+
 def generate_kernel_prefetch_choices(kernel, ivecs):
     if ivecs:
         for knl in generate_single_vector_kernel_prefetch_choices(kernel, ivecs[0]):
@@ -605,7 +659,7 @@ def generate_all_prefetching_kernels(kernel):
     for flags in gnitt(2, len(ivecs)):
         for knl in generate_kernel_prefetch_choices(kernel,
                 [ivec for flag, ivec in zip(flags, ivecs) if flag]):
-            yield knl
+            yield optimize_prefetch(knl)
 
 
 
@@ -776,6 +830,8 @@ def generate_code(kernel):
     from pymbolic.primitives import Subscript
     from pymbolic import var
 
+    # prefetch name assignment
+
     def get_prefetch_name(pf):
         try:
             return prefetch_names[pf]
@@ -788,6 +844,7 @@ def generate_code(kernel):
 
     ccm = LoopyCCodeMapper(kernel, get_prefetch_name)
 
+    # write innermost loop body
     inner = Block([])
     for lvalue, expr in kernel.instructions:
         assert isinstance(lvalue, Subscript)
@@ -797,7 +854,23 @@ def generate_code(kernel):
 
     thread_count = kernel.thread_count()
 
-    for sched_item in kernel.schedule[::-1]:
+    # we're progressing from the innermost (last in the schedule) 
+    # to the outermost loop
+
+    schedule = kernel.schedule[::-1]
+    for sched_index, sched_item in enumerate(schedule):
+        # find surrounding schedule items
+        if sched_index > 0:
+            next_inner_sched_item = schedule[sched_index-1]
+        else:
+            next_inner_sched_item = None
+            
+        if sched_index+1 < len(schedule):
+            next_outer_sched_item = schedule[sched_index+1]
+        else:
+            next_outer_sched_item = None
+
+        # write code for loops
         if isinstance(sched_item, LoopDimension):
             dim = sched_item
             if dim.tag is None:
@@ -806,6 +879,7 @@ def generate_code(kernel):
                         "%s < %s" % (dim.name, dim.length),
                         "++%s" % dim.name, inner)
 
+        # write code for output writes
         elif isinstance(sched_item, WriteOutput):
             inner = Block(
                     [Initializer(POD(numpy.float32, 
@@ -816,21 +890,25 @@ def generate_code(kernel):
                         ccm(lvalue, PREC_NONE),
                         "tmp_"+lvalue.aggregate.name)
                         for lvalue, expr in kernel.instructions])
+
+        # write code for prefetches
         elif isinstance(sched_item, PrefetchDescriptor):
             pf = sched_item
             pf_name = get_prefetch_name(pf)
 
+            # build smem array declarator
             smem_pf_array = POD(numpy.float32, pf_name)
-            for dim in pf.dims:
-                l = dim.length
+            for l in pf.dim_storage_lengths:
                 smem_pf_array = ArrayOf(smem_pf_array, l)
             smem_pf_array = CudaShared(smem_pf_array)
 
+            # figure out dimensions
             from pytools import partition2
             thread_pf_dims, non_thread_pf_dims = partition2(
                     (isinstance(dim.tag, THREAD_IDX_TAG), dim)
                     for dim in pf.dims)
 
+            # start writing fetch code block
             fetch_block = Block([
                     Initializer(
                         POD(numpy.uint32, "fetch_idx"),
@@ -888,7 +966,7 @@ def generate_code(kernel):
 
             # generate fetch loop
 
-            # fetch_base and fetch_idx neglect thread_pf_size
+            # fetch_base and fetch_idx don't include thread_pf_size
             fetch_base = 0
             while fetch_base + non_pf_thread_size <= non_thread_pf_size:
                 fetch_block.append(pf_assignment)
@@ -902,27 +980,48 @@ def generate_code(kernel):
                         If("fetch_idx < %d" % non_thread_pf_size,
                             pf_assignment))
 
-            inner = Block(
-                    [
+            new_block = Block([
                     Comment("prefetch dimensions: " + ", ".join(
                         "%s[%d]" % (pfdim.name, pfdim.length) for pfdim in pf.dims)),
                     Comment("  ... direct-thread prefetch dims: " + ", ".join(
                         pfdim.name for pfdim in thread_pf_dims)),
                     Line(),
-                    S("__syncthreads()"),
-                    smem_pf_array,
-                    fetch_block,
-                    S("__syncthreads()"),
-                    Line(),
-                    ]+[inner])
+                    ])
+
+            # omit head sync primitive if we just came out of a prefetch
+            if not isinstance(next_outer_sched_item, PrefetchDescriptor):
+                new_block.append(S("__syncthreads()"))
+            else:
+                new_block.append(Comment("next outer schedule item is a prefetch: "
+                    "no sync needed"))
+
+            new_block.extend([
+                Line(),
+                smem_pf_array,
+                fetch_block,
+                Line(),
+                ])
+
+            # omit tail sync primitive if we're headed into another prefetch
+            if not isinstance(next_inner_sched_item, PrefetchDescriptor):
+                new_block.append(S("__syncthreads()"))
+            else:
+                new_block.append(Comment("next inner schedule item is a prefetch: "
+                    "no sync needed"))
+
+            new_block.extend([Line(),inner])
+
+            inner = new_block
 
     mod = Module()
 
+    # add texture declarations
     for v in kernel.input_vectors():
         mod.append(
                 Value("texture<float, 1, cudaReadModeElementType>",
                     "tex_"+v))
 
+    # symbolic names for thread and block indices
     mod.extend([Line()]
             + [Define(dim.name, "blockIdx.%s /* 0..%d */"
                 % (AXES[dim.tag.axis], dim.length-1))
@@ -932,15 +1031,7 @@ def generate_code(kernel):
                 for dim in kernel.dims_by_tag_type(THREAD_IDX_TAG)]
             + [Line()])
 
-    from pymbolic import var
-    expr = None
-    for i, block_axis_length in list(enumerate(kernel.block_dim()))[::-1]:
-        if expr is None:
-            if block_axis_length != 1:
-                expr = var("threadIdx." + AXES[i])
-        else:
-            expr = expr*block_axis_length + var("threadIdx." + AXES[i])
-
+    # construct function
     mod.append(
         FunctionBody(
             CudaGlobal(FunctionDeclaration(
@@ -1051,7 +1142,8 @@ def drive_timing_run(kernel_generator, launch, flop_count=None):
         print "-----------------------------------------------"
         print "time: %f" % elapsed
         if flop_count is not None:
-            print "gflops/s: %f" % (flop_count/elapsed/1e9)
+            print "gflops/s: %f (#%d)" % (
+                    flop_count/elapsed/1e9, soln_count)
         print "-----------------------------------------------"
 
         soln_count += 1
