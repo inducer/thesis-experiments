@@ -70,8 +70,8 @@ def main():
 
     import hedge.mpi as mpi
 
-    rcon = guess_run_context()
-    cpu_rcon = guess_run_context(disable=set(["cuda"]))
+    rcon = guess_run_context(["cuda", "mpi"])
+    cpu_rcon = guess_run_context(["mpi"])
 
     epsilon0 = 8.8541878176e-12 # C**2 / (N m**2)
     mu0 = 4*pi*1e-7 # N/A**2.
