@@ -1,4 +1,3 @@
-
 # Hedge - the Hybrid'n'Easy DG Environment
 # Copyright (C) 2007 Andreas Kloeckner
 #
@@ -26,25 +25,24 @@ import numpy.linalg as la
 
 
 class VlasovOperator:
-    def __init__(self, v_grid_points=50):
+    def __init__(self, v_grid_points=20):
         assert v_grid_points % 2 == 0
         # otherwise differentiation becomes non-invertible
 
-        import spyctral.wienerfun as wienerfun
+        import spyctral.wiener as wiener
         self.v_quad_points_1d, self.v_quad_weights_1d = \
-                wienerfun.quad.genwienerw_pgquad(
-                        v_grid_points)
+                wiener.quad.pgq(v_grid_points)
 
         self.v_quad_points = numpy.reshape(
                 self.v_quad_points_1d,
                 (len(self.v_quad_points_1d), 1))
-        self.v_quad_weights = self.v_quad_points
+        self.v_quad_weights = self.v_quad_weights_1d
 
         from numpy import dot
         from spyctral.common.indexing import integer_range
-        ps = wienerfun.eval.genwienerw(self.v_quad_points_1d,
+        ps = wiener.eval.weighted_wiener(self.v_quad_points_1d,
         integer_range(v_grid_points))
-        dps = wienerfun.eval.dgenwienerw(self.v_quad_points_1d,
+        dps = wiener.eval.dweighted_wiener(self.v_quad_points_1d,
         integer_range(v_grid_points))
 
         diffmat = dot(dps,ps.T.conj()*
@@ -54,6 +52,7 @@ class VlasovOperator:
         from hedge.data import \
                 TimeConstantGivenFunction, \
                 ConstantGivenFunction
+
         self.x_adv_operators = [
                 StrongAdvectionOperator(v,
                     inflow_u=TimeConstantGivenFunction(
@@ -65,20 +64,43 @@ class VlasovOperator:
         from hedge.optemplate import \
                 make_vector_field
 
-        densities = make_vector_field(
+        densities = make_vector_field("f",
                 len(self.v_quad_points))
+
+        def adv_op_template(adv_op, f_of_v):
+            from hedge.optemplate import Field, pair_with_boundary, \
+                    get_flux_operator, make_nabla, InverseMassOperator
+
+            #bc_in = Field("bc_in")
+
+            nabla = make_nabla(adv_op.dimensions)
+
+            return (
+                    -numpy.dot(adv_op.v, nabla*f_of_v) 
+                    + InverseMassOperator()*(
+                        get_flux_operator(adv_op.flux()) * f_of_v
+                        #+ flux_op * pair_with_boundary(f_of_v, bc_in, self.inflow_tag)
+                        )
+                    )
 
         from hedge.tools import make_obj_array
         return make_obj_array([
-                adv_op*densities[i]
+                adv_op_template(adv_op, densities[i])
                 for i, adv_op in enumerate(
                     self.x_adv_operators)
                 ])
 
     def bind(self, discr):
-        optemplate = self.op_template()
+        compiled_op_template = discr.compile(self.op_template())
+
+        def rhs(t, densities):
+            return compiled_op_template(f=densities)
+
+        return rhs
 
 
+    def max_eigenvalue(self):
+        return max(la.norm(v) for v in self.v_quad_points)
 
 
 
@@ -93,20 +115,17 @@ def main():
     rcon = guess_run_context()
 
     def f(x):
-        return sin(pi*x)
+        return sin(x)
 
     def u_analytic(x, el, t):
         return f((-numpy.dot(v, x)/norm_v+t*norm_v))
 
-    def boundary_tagger(vertices, el, face_nr, all_v):
-        if numpy.dot(el.face_normals[face_nr], v) < 0:
-            return ["inflow"]
-        else:
-            return ["outflow"]
+    left = 0
+    right = 2*pi
 
     if rcon.is_head_rank:
         from hedge.mesh import make_uniform_1d_mesh
-        mesh = make_uniform_1d_mesh(0, 2, 10, periodic=True)
+        mesh = make_uniform_1d_mesh(left, right, 10, periodic=True)
 
     if rcon.is_head_rank:
         mesh_data = rcon.distribute_mesh(mesh)
@@ -116,14 +135,15 @@ def main():
     discr = rcon.make_discretization(mesh_data, order=4)
     vis_discr = discr
 
-    from hedge.visualization import VtkVisualizer, SiloVisualizer
-    vis = VtkVisualizer(vis_discr, rcon, "fld")
-    #vis = SiloVisualizer(vis_discr, rcon)
+    from hedge.visualization import SiloVisualizer
+    vis = SiloVisualizer(vis_discr, rcon)
 
     # operator setup ----------------------------------------------------------
     op = VlasovOperator()
 
-    u = discr.interpolate_volume_function(lambda x, el: u_analytic(x, el, 0))
+    sine_vec = discr.interpolate_volume_function(lambda x, el: sin(x[0]))
+    from hedge.tools import make_obj_array
+    densities = make_obj_array([sine_vec.copy() for v in op.v_quad_points])
 
     # timestep setup ----------------------------------------------------------
     stepper = RK4TimeStepper()
@@ -131,11 +151,10 @@ def main():
     dt = discr.dt_factor(op.max_eigenvalue())
     nsteps = int(700/dt)
 
-    if rcon.is_head_rank:
-        print "%d elements, dt=%g, nsteps=%d" % (
-                len(discr.mesh.elements),
-                dt,
-                nsteps)
+    print "%d elements, dt=%g, nsteps=%d" % (
+            len(discr.mesh.elements),
+            dt,
+            nsteps)
 
     # diagnostics setup -------------------------------------------------------
     from pytools.log import LogManager, \
@@ -143,7 +162,7 @@ def main():
             add_simulation_quantities, \
             add_run_info
 
-    logmgr = LogManager("advection.dat", "w", rcon.communicator)
+    logmgr = LogManager("vlasov.dat", "w", rcon.communicator)
     add_run_info(logmgr)
     add_general_quantities(logmgr)
     add_simulation_quantities(logmgr, dt)
@@ -151,22 +170,30 @@ def main():
 
     stepper.add_instrumentation(logmgr)
 
-    from hedge.log import Integral, LpNorm
-    u_getter = lambda: u
-    logmgr.add_quantity(Integral(u_getter, discr, name="int_u"))
-    logmgr.add_quantity(LpNorm(u_getter, discr, p=1, name="l1_u"))
-    logmgr.add_quantity(LpNorm(u_getter, discr, name="l2_u"))
-
-    logmgr.add_watches(["step.max", "t_sim.max", "l2_u", "t_step.max"])
+    logmgr.add_watches(["step.max", "t_sim.max", "t_step.max"])
 
     # timestep loop -----------------------------------------------------------
     rhs = op.bind(discr)
+
     for step in xrange(nsteps):
         logmgr.tick()
 
         t = step*dt
 
         if step % 5 == 0:
+            img_data = numpy.array(list(densities))
+            from matplotlib.pyplot import imshow, savefig, xlabel, ylabel
+
+            imshow(img_data, extent=(left, right, 
+                op.v_quad_points_1d[0],
+                op.v_quad_points_1d[-1]))
+
+            xlabel("$x$")
+            ylabel("$v$")
+
+            savefig("vlasov-%04d.png" % step)
+
+        if False and step % 5 == 0:
             visf = vis.make_file("fld-%04d" % step)
             vis.add_data(visf, [ ("u", u), ],
                         time=t,
@@ -175,7 +202,7 @@ def main():
             visf.close()
 
 
-        u = stepper(u, t, dt, rhs)
+        densities = stepper(densities, t, dt, rhs)
 
     vis.close()
 
