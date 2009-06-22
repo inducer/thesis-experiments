@@ -25,28 +25,13 @@ import numpy.linalg as la
 
 
 class VlasovOperator:
-    def __init__(self, v_grid_points=20):
-        assert v_grid_points % 2 == 0
+    def __init__(self, v_grid_size=20, v_method="wiener"):
+        assert v_grid_size % 2 == 0
         # otherwise differentiation becomes non-invertible
 
-        import spyctral.wiener as wiener
-        self.v_quad_points_1d, self.v_quad_weights_1d = \
-                wiener.quad.pgq(v_grid_points)
+        self.v_grid_size = v_grid_size
 
-        self.v_quad_points = numpy.reshape(
-                self.v_quad_points_1d,
-                (len(self.v_quad_points_1d), 1))
-        self.v_quad_weights = self.v_quad_weights_1d
-
-        from numpy import dot
-        from spyctral.common.indexing import integer_range
-        ps = wiener.eval.weighted_wiener(self.v_quad_points_1d,
-        integer_range(v_grid_points))
-        dps = wiener.eval.dweighted_wiener(self.v_quad_points_1d,
-        integer_range(v_grid_points))
-
-        diffmat = dot(dps,ps.T.conj()*
-                          self.v_quad_weights_1d)
+        execfile("akil-hack.py")
 
         from hedge.pde import StrongAdvectionOperator
         from hedge.data import \
@@ -64,7 +49,7 @@ class VlasovOperator:
         from hedge.optemplate import \
                 make_vector_field
 
-        densities = make_vector_field("f",
+        f = make_vector_field("f",
                 len(self.v_quad_points))
 
         def adv_op_template(adv_op, f_of_v):
@@ -76,7 +61,7 @@ class VlasovOperator:
             nabla = make_nabla(adv_op.dimensions)
 
             return (
-                    -numpy.dot(adv_op.v, nabla*f_of_v) 
+                    -numpy.dot(adv_op.v, nabla*f_of_v)
                     + InverseMassOperator()*(
                         get_flux_operator(adv_op.flux()) * f_of_v
                         #+ flux_op * pair_with_boundary(f_of_v, bc_in, self.inflow_tag)
@@ -84,11 +69,16 @@ class VlasovOperator:
                     )
 
         from hedge.tools import make_obj_array
+        f_v = make_obj_array([
+            sum(self.v_diffmat[i,j]*f[j] for j in range(self.v_grid_size))
+            for i in range(self.v_grid_size)
+            ])
+
         return make_obj_array([
-                adv_op_template(adv_op, densities[i])
+                adv_op_template(adv_op, f[i])
                 for i, adv_op in enumerate(
                     self.x_adv_operators)
-                ])
+                ]) + f_v
 
     def bind(self, discr):
         compiled_op_template = discr.compile(self.op_template())
@@ -108,7 +98,7 @@ class VlasovOperator:
 def main():
     from hedge.timestep import RK4TimeStepper
     from hedge.tools import mem_checkpoint
-    from math import sin, cos, pi, sqrt
+    from math import sin, cos, pi, sqrt, exp
     from math import floor
 
     from hedge.backends import guess_run_context
@@ -143,7 +133,10 @@ def main():
 
     sine_vec = discr.interpolate_volume_function(lambda x, el: sin(x[0]))
     from hedge.tools import make_obj_array
-    densities = make_obj_array([sine_vec.copy() for v in op.v_quad_points])
+
+    densities = make_obj_array([
+        sine_vec.copy()*exp(-(0.4*v[0]**2))
+        for v in op.v_quad_points])
 
     # timestep setup ----------------------------------------------------------
     stepper = RK4TimeStepper()
@@ -182,14 +175,22 @@ def main():
 
         if step % 5 == 0:
             img_data = numpy.array(list(densities))
-            from matplotlib.pyplot import imshow, savefig, xlabel, ylabel
+            from matplotlib.pyplot import imshow, savefig, \
+                    xlabel, ylabel, colorbar, clf, yticks
 
-            imshow(img_data, extent=(left, right, 
-                op.v_quad_points_1d[0],
-                op.v_quad_points_1d[-1]))
+            clf()
+            imshow(img_data, extent=(left, right, -1, 1))
 
             xlabel("$x$")
             ylabel("$v$")
+
+            ytick_step = int(round(op.v_grid_size / 8))
+            yticks(
+                    numpy.linspace(
+                        -1, 1, op.v_grid_size)[::ytick_step],
+                    ["%.3f" % vn for vn in 
+                        op.v_quad_points_1d[::ytick_step]])
+            colorbar()
 
             savefig("vlasov-%04d.png" % step)
 
@@ -200,7 +201,6 @@ def main():
                         step=step
                         )
             visf.close()
-
 
         densities = stepper(densities, t, dt, rhs)
 
