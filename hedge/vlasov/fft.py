@@ -1,6 +1,28 @@
 from __future__ import division
 import numpy
+import cmath
 import numpy.linalg as la
+from pytools import memoize
+
+
+
+
+
+@memoize
+def find_factors(N):
+    from math import sqrt
+
+    N1 = 2
+    max_N1 = int(sqrt(N))+1
+    while N % N1 != 0 and N1 <= max_N1:
+        N1 += 1
+
+    if N1 > max_N1:
+        N1 = N
+
+    N2 = N // N1
+
+    return N1, N2
 
 
 
@@ -10,33 +32,47 @@ def fft(x, sign=1, wrap_intermediate=lambda x: x):
 
     F[x]_i = \sum_{j=0}^{n-1} z^{ij} x_j
 
-    where z = exp(sign*-2j*pi/n) and n = len(x) must be a power of 2.
+    where z = exp(sign*-2j*pi/n) and n = len(x).
     """
 
-    if len(x) == 1:
-        return x
+    # http://en.wikipedia.org/wiki/Cooley-Tukey_FFT_algorithm
+    # revision 293076305, http://is.gd/1c7PI
 
     from math import pi
-    ft_even = wrap_intermediate(fft(x[::2], sign, wrap_intermediate))
-    ft_odd = wrap_intermediate(fft(x[1::2], sign, wrap_intermediate) \
-            * numpy.exp(numpy.linspace(0, sign*(-1j)*pi, len(x)//2,
-                endpoint=False)))
 
-    return numpy.hstack([ft_even+ft_odd, ft_even-ft_odd])
+    N = len(x)
+
+    if N == 1:
+        return x
+
+    N1, N2 = find_factors(N)
+
+    # do the transform
+    sub_ffts = [
+            wrap_intermediate(
+                fft(x[n1::N1], sign, wrap_intermediate)
+                * numpy.exp(numpy.linspace(0, sign*(-2j)*pi*n1/N1, N2,
+                    endpoint=False)))
+            for n1 in range(N1)]
+
+    return numpy.hstack([
+        sum(subvec * cmath.exp(sign*(-2j)*pi*n1*k1/N1)
+            for n1, subvec in enumerate(sub_ffts))
+        for k1 in range(N1)
+        ])
 
 
 
 
 def test_with_floats():
-    for i in range(4, 9):
-        n = 2**i
+    for n in [2**i for i in range(4, 10)]+[17, 12, 948]:
         a = numpy.random.rand(n) + 1j*numpy.random.rand(n)
         f_a = fft(a)
         a2 = 1/n*fft(f_a, -1)
-        assert la.norm(a-a2) < 1e-12
+        assert la.norm(a-a2) < 1e-10
 
         f_a_numpy = numpy.fft.fft(a)
-        assert la.norm(f_a-f_a_numpy) < 1e-12
+        assert la.norm(f_a-f_a_numpy) < 1e-10
 
 
 
@@ -58,6 +94,7 @@ class NearZeroKiller(IdentityMapper):
 
 
 
+
 def test_with_pymbolic():
     from pymbolic import var
     vars = numpy.array([var(chr(97+i)) for i in range(16)], dtype=object)
@@ -72,10 +109,7 @@ def test_with_pymbolic():
 
     nzk = NearZeroKiller()
     print nzk(fft(vars))
-
-    traced_fft = fft(vars, wrap_intermediate=wrap_intermediate)
-
-    traced_fft = nzk(traced_fft)
+    traced_fft = nzk(fft(vars, wrap_intermediate=wrap_intermediate))
 
     from pymbolic.mapper.stringifier import PREC_NONE
     from pymbolic.mapper.c_code import CCodeMapper
