@@ -16,6 +16,10 @@ class VelocityDiscretization:
             indices = spyctral.common.indexing.integer_range(grid_size)
             scaling = lambda N,L,**params: spyctral.wiener.nodes.scale_nodes(N,L,s=wiener_s,**params)
 
+        # !!! DANGER! "is" is incorrect here.
+        # >>> 100*"wiener" is 100*"wiener"
+        # False
+
         elif method is "hermite":
             params['mu'] = 0
             quadpoints = spyctral.hermite.quad.pgq
@@ -33,13 +37,16 @@ class VelocityDiscretization:
             indices = spyctral.common.indexing.whole_range(grid_size)
             scaling = spyctral.mapjpoly.nodes.scale_nodes
 
+        else:
+            raise ValueError("invalid v discretization method: %s" % method)
+
         if hard_scale is not None:
             params['scale'] = scaling(hard_scale,grid_size,delta=1.0,**params)
 
         self.quad_points_1d, self.quad_weights_1d = \
             quadpoints(grid_size,**params)
 
-        self.quad_points = numpy.reshape( self.quad_points_1d,
+        self.quad_points = numpy.reshape(self.quad_points_1d,
                 (len(self.quad_points_1d), 1))
         self.quad_weights = self.quad_weights_1d
 

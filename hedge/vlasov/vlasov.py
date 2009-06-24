@@ -17,7 +17,7 @@
 
 
 
-from __future__ import division
+from __future__ import division, with_statement
 import numpy
 import numpy.linalg as la
 
@@ -25,12 +25,8 @@ import numpy.linalg as la
 
 
 class VlasovOperator:
-    def __init__(self, v_grid_size=42, v_method="wiener",
+    def __init__(self, v_grid_size=50, v_method="hermite",
             hard_scale=None):
-        # we're not hoping to invert the d.m. any more.
-        # assert v_grid_size % 2 == 1
-        # otherwise differentiation becomes non-invertible
-
         from v_discr import VelocityDiscretization
         self.v_discr = VelocityDiscretization(
                 v_grid_size, v_method, hard_scale)
@@ -92,11 +88,45 @@ class VlasovOperator:
 
         return rhs
 
-
     def max_eigenvalue(self):
         return max(la.norm(v) for v in self.v_discr.quad_points)
 
+    def visualize_densities_with_matplotlib(self, discr, filename, densities):
+        left, right = discr.mesh.bounding_box()
+        left = left[0]
+        right = right[0]
 
+        img_data = numpy.array(list(densities))
+        from matplotlib.pyplot import imshow, savefig, \
+                xlabel, ylabel, colorbar, clf, yticks
+
+        clf()
+        imshow(img_data, extent=(left, right, -1, 1))
+
+        xlabel("$x$")
+        ylabel("$v$")
+
+        ytick_step = int(round(self.v_discr.grid_size / 8))
+        yticks(
+                numpy.linspace(
+                    -1, 1, self.v_discr.grid_size)[::ytick_step],
+                ["%.3f" % vn for vn in 
+                    self.v_discr.quad_points_1d[::ytick_step]])
+        colorbar()
+
+        savefig(filename)
+
+    def visualize_densities_with_silo(self, discr, filename, densities):
+        from pylo import SiloFile, DB_NODECENT
+
+        with SiloFile(filename) as silo:
+            silo.put_quadmesh("xvmesh", [
+                discr.nodes.reshape((len(discr.nodes),)),
+                self.v_discr.quad_points_1d,
+                ])
+
+            f_data = numpy.array(list(densities))
+            silo.put_quadvar1("f", "xvmesh", f_data, f_data.shape, DB_NODECENT)
 
 
 def main():
@@ -108,29 +138,10 @@ def main():
     from hedge.backends import guess_run_context
     rcon = guess_run_context()
 
-    def f(x):
-        return sin(x)
+    from hedge.mesh import make_uniform_1d_mesh
+    mesh = make_uniform_1d_mesh(0, 2*pi, 20, periodic=True)
 
-    def u_analytic(x, el, t):
-        return f((-numpy.dot(v, x)/norm_v+t*norm_v))
-
-    left = 0
-    right = 2*pi
-
-    if rcon.is_head_rank:
-        from hedge.mesh import make_uniform_1d_mesh
-        mesh = make_uniform_1d_mesh(left, right, 10, periodic=True)
-
-    if rcon.is_head_rank:
-        mesh_data = rcon.distribute_mesh(mesh)
-    else:
-        mesh_data = rcon.receive_mesh()
-
-    discr = rcon.make_discretization(mesh_data, order=4)
-    vis_discr = discr
-
-    from hedge.visualization import SiloVisualizer
-    vis = SiloVisualizer(vis_discr, rcon)
+    discr = rcon.make_discretization(mesh, order=4)
 
     # operator setup ----------------------------------------------------------
     op = VlasovOperator()
@@ -149,9 +160,7 @@ def main():
     nsteps = int(700/dt)
 
     print "%d elements, dt=%g, nsteps=%d" % (
-            len(discr.mesh.elements),
-            dt,
-            nsteps)
+            len(discr.mesh.elements), dt, nsteps)
 
     # diagnostics setup -------------------------------------------------------
     from pytools.log import LogManager, \
@@ -178,33 +187,10 @@ def main():
         t = step*dt
 
         if step % 5 == 0:
-            img_data = numpy.array(list(densities))
-            from matplotlib.pyplot import imshow, savefig, \
-                    xlabel, ylabel, colorbar, clf, yticks
-
-            clf()
-            imshow(img_data, extent=(left, right, -1, 1))
-
-            xlabel("$x$")
-            ylabel("$v$")
-
-            ytick_step = int(round(op.v_discr.grid_size / 8))
-            yticks(
-                    numpy.linspace(
-                        -1, 1, op.v_discr.grid_size)[::ytick_step],
-                    ["%.3f" % vn for vn in 
-                        op.v_discr.quad_points_1d[::ytick_step]])
-            colorbar()
-
-            savefig("vlasov-%04d.png" % step)
-
-        if False and step % 5 == 0:
-            visf = vis.make_file("fld-%04d" % step)
-            vis.add_data(visf, [ ("u", u), ],
-                        time=t,
-                        step=step
-                        )
-            visf.close()
+            #op.visualize_densities_with_matplotlib(discr,
+                    #"vlasov-%04d.png" % step, densities)
+            op.visualize_densities_with_silo(discr,
+                    "vlasov-%04d.silo" % step, densities)
 
         densities = stepper(densities, t, dt, rhs)
 
