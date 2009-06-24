@@ -1,22 +1,3 @@
-# Hedge - the Hybrid'n'Easy DG Environment
-# Copyright (C) 2007 Andreas Kloeckner
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-
-
-
 from __future__ import division, with_statement
 import numpy
 import numpy.linalg as la
@@ -25,7 +6,7 @@ import numpy.linalg as la
 
 
 class VlasovOperator:
-    def __init__(self, v_grid_size=50, v_method="hermite",
+    def __init__(self, v_grid_size=50, v_method="wiener",
             hard_scale=None):
         from v_discr import VelocityDiscretization
         self.v_discr = VelocityDiscretization(
@@ -119,14 +100,24 @@ class VlasovOperator:
     def visualize_densities_with_silo(self, discr, filename, densities):
         from pylo import SiloFile, DB_NODECENT
 
+        scheme_dtype = self.v_discr.diffmat.dtype
+        is_complex = (numpy.complexfloating in scheme_dtype.type.__mro__)
+        f_data = numpy.array(list(densities), dtype=scheme_dtype)
+
         with SiloFile(filename) as silo:
             silo.put_quadmesh("xvmesh", [
                 discr.nodes.reshape((len(discr.nodes),)),
                 self.v_discr.quad_points_1d,
                 ])
 
-            f_data = numpy.array(list(densities))
-            silo.put_quadvar1("f", "xvmesh", f_data, f_data.shape, DB_NODECENT)
+            if is_complex:
+                silo.put_quadvar1("f_r", "xvmesh", f_data.real.copy(), f_data.shape, 
+                        DB_NODECENT)
+                silo.put_quadvar1("f_i", "xvmesh", f_data.imag.copy(), f_data.shape, 
+                        DB_NODECENT)
+            else:
+                silo.put_quadvar1("f", "xvmesh", f_data, f_data.shape, 
+                        DB_NODECENT)
 
 
 def main():
