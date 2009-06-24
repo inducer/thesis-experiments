@@ -25,13 +25,15 @@ import numpy.linalg as la
 
 
 class VlasovOperator:
-    def __init__(self, v_grid_size=20, v_method="wiener"):
-        assert v_grid_size % 2 == 0
+    def __init__(self, v_grid_size=42, v_method="wiener",
+            hard_scale=None):
+        # we're not hoping to invert the d.m. any more.
+        # assert v_grid_size % 2 == 1
         # otherwise differentiation becomes non-invertible
 
-        self.v_grid_size = v_grid_size
-
-        execfile("akil-hack.py")
+        from v_discr import VelocityDiscretization
+        self.v_discr = VelocityDiscretization(
+                v_grid_size, v_method, hard_scale)
 
         from hedge.pde import StrongAdvectionOperator
         from hedge.data import \
@@ -43,14 +45,14 @@ class VlasovOperator:
                     inflow_u=TimeConstantGivenFunction(
                         ConstantGivenFunction()),
                     flux_type="upwind")
-                for v in self.v_quad_points]
+                for v in self.v_discr.quad_points]
 
     def op_template(self):
         from hedge.optemplate import \
                 make_vector_field
 
         f = make_vector_field("f",
-                len(self.v_quad_points))
+                len(self.v_discr.quad_points))
 
         def adv_op_template(adv_op, f_of_v):
             from hedge.optemplate import Field, pair_with_boundary, \
@@ -68,10 +70,12 @@ class VlasovOperator:
                         )
                     )
 
+        v_discr = self.v_discr
+
         from hedge.tools import make_obj_array
         f_v = make_obj_array([
-            sum(self.v_diffmat[i,j]*f[j] for j in range(self.v_grid_size))
-            for i in range(self.v_grid_size)
+            sum(v_discr.diffmat[i,j]*f[j] for j in range(v_discr.grid_size))
+            for i in range(v_discr.grid_size)
             ])
 
         return make_obj_array([
@@ -90,7 +94,7 @@ class VlasovOperator:
 
 
     def max_eigenvalue(self):
-        return max(la.norm(v) for v in self.v_quad_points)
+        return max(la.norm(v) for v in self.v_discr.quad_points)
 
 
 
@@ -135,8 +139,8 @@ def main():
     from hedge.tools import make_obj_array
 
     densities = make_obj_array([
-        sine_vec.copy()*exp(-(0.4*v[0]**2))
-        for v in op.v_quad_points])
+        sine_vec.copy()*exp(-(0.8*v[0]**2))
+        for v in op.v_discr.quad_points])
 
     # timestep setup ----------------------------------------------------------
     stepper = RK4TimeStepper()
@@ -184,12 +188,12 @@ def main():
             xlabel("$x$")
             ylabel("$v$")
 
-            ytick_step = int(round(op.v_grid_size / 8))
+            ytick_step = int(round(op.v_discr.grid_size / 8))
             yticks(
                     numpy.linspace(
-                        -1, 1, op.v_grid_size)[::ytick_step],
+                        -1, 1, op.v_discr.grid_size)[::ytick_step],
                     ["%.3f" % vn for vn in 
-                        op.v_quad_points_1d[::ytick_step]])
+                        op.v_discr.quad_points_1d[::ytick_step]])
             colorbar()
 
             savefig("vlasov-%04d.png" % step)
