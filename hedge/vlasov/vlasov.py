@@ -6,11 +6,9 @@ import numpy.linalg as la
 
 
 class VlasovOperator:
-    def __init__(self, v_grid_size=50, v_method="wiener",
-            hard_scale=None):
+    def __init__(self, *args, **kwargs):
         from v_discr import VelocityDiscretization
-        self.v_discr = VelocityDiscretization(
-                v_grid_size, v_method, hard_scale)
+        self.v_discr = VelocityDiscretization(*args, **kwargs)
 
         from hedge.pde import StrongAdvectionOperator
         from hedge.data import \
@@ -135,7 +133,8 @@ def main():
     discr = rcon.make_discretization(mesh, order=4)
 
     # operator setup ----------------------------------------------------------
-    op = VlasovOperator()
+    op = VlasovOperator(grid_size=20, filter_type="exponential",
+            hard_scale=5, bounded_fraction=0.8)
 
     sine_vec = discr.interpolate_volume_function(lambda x, el: sin(x[0]))
     from hedge.tools import make_obj_array
@@ -177,7 +176,7 @@ def main():
 
         t = step*dt
 
-        if step % 5 == 0:
+        if step % 20 == 0:
             #op.visualize_densities_with_matplotlib(discr,
                     #"vlasov-%04d.png" % step, densities)
             op.visualize_densities_with_silo(discr,
