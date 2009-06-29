@@ -43,11 +43,6 @@ def main():
     options, args = parser.parse_args()
     assert not args
 
-    if options.profile_cuda:
-        import os, hedge.mpi
-        os.environ["CUDA_PROFILE"] = "1"
-        os.environ["CUDA_PROFILE_LOG"] = "cuda_profile_%d.log" % hedge.mpi.rank
-
     from hedge.element import TetrahedralElement
     from hedge.mesh import make_ball_mesh, make_cylinder_mesh, make_box_mesh
     from hedge.visualization import \
@@ -68,10 +63,14 @@ def main():
 
     from hedge.backends import guess_run_context
 
-    import hedge.mpi as mpi
-
     rcon = guess_run_context(["cuda", "mpi"])
     cpu_rcon = guess_run_context(["mpi"])
+
+    if options.profile_cuda:
+        import os
+        import boostmpi as mpi
+        os.environ["CUDA_PROFILE"] = "1"
+        os.environ["CUDA_PROFILE_LOG"] = "cuda_profile_%d.log" % mpi.rank
 
     epsilon0 = 8.8541878176e-12 # C**2 / (N m**2)
     mu0 = 4*pi*1e-7 # N/A**2.
