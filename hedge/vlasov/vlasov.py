@@ -22,12 +22,14 @@ class VlasovOperator:
                     flux_type="upwind")
                 for v in self.v_discr.quad_points]
 
-    def op_template(self):
+    def op_template(self, densities_base=0):
         from hedge.optemplate import \
                 make_vector_field
 
         f = make_vector_field("f",
-                len(self.v_discr.quad_points))
+                range(densities_base, 
+                    densities_base
+                    +len(self.v_discr.quad_points)))
 
         def adv_op_template(adv_op, f_of_v):
             from hedge.optemplate import Field, pair_with_boundary, \
@@ -48,10 +50,20 @@ class VlasovOperator:
         v_discr = self.v_discr
 
         from hedge.tools import make_obj_array
-        f_v = make_obj_array([
-            sum(v_discr.diffmat[i,j]*f[j] for j in range(v_discr.grid_size))
-            for i in range(v_discr.grid_size)
-            ])
+
+        if hasattr(self.v_discr, "diff_function"):
+            f_v = self.v_discr.diff_function(f)
+        else:
+            f_v = make_obj_array([
+                sum(v_discr.diffmat[i,j]*f[j] for j in range(v_discr.grid_size))
+                for i in range(v_discr.grid_size)
+                ])
+
+        #for i, f_v_i in enumerate(f_v):
+            #print i, f_v_i
+            #print
+
+        #raw_input()
 
         return make_obj_array([
                 adv_op_template(adv_op, f[i])
@@ -99,7 +111,7 @@ class VlasovOperator:
         from pylo import SiloFile, DB_NODECENT
 
         scheme_dtype = self.v_discr.diffmat.dtype
-        is_complex = (numpy.complexfloating in scheme_dtype.type.__mro__)
+        is_complex = scheme_dtype.kind == "c"
         f_data = numpy.array(list(densities), dtype=scheme_dtype)
 
         with SiloFile(filename) as silo:
@@ -118,6 +130,38 @@ class VlasovOperator:
                         DB_NODECENT)
 
 
+
+
+class VlasovMaxwellOperator(VlasovOperator):
+    def __init__(self, maxwell_op, *args, **kwarg):
+        VlasovOperator.__init__(self, *args, **kwargs)
+
+        self.maxwell_op = maxwell_op
+
+        from hedge.tools import count_subset
+        self.maxwell_field_count = \
+                count_subset(self.maxwell_op.get_eh_subset())
+
+    def op_template(self):
+        max_op_template = self.maxwell_op.op_template()
+
+    def bind(discr):
+        bound_max_op = self.maxwell_op.bind(discr)
+        compiled_vlasov_op_template = \
+                discr.compile(self.op_template())
+
+        def rhs(t, eh_densities):
+            max_w = eh_densities[:self.maxwell_field_count]
+            densities = eh_densities[self.maxwell_field_count]
+
+            from hedge.tools import join_fields
+            return join_fields(
+                    bound_max_op(max_w),
+                    compiled_vlasov_op_template(f=densities))
+
+
+
+
 def main():
     from hedge.timestep import RK4TimeStepper
     from hedge.tools import mem_checkpoint
@@ -130,11 +174,16 @@ def main():
     from hedge.mesh import make_uniform_1d_mesh
     mesh = make_uniform_1d_mesh(0, 2*pi, 20, periodic=True)
 
-    discr = rcon.make_discretization(mesh, order=4)
+    discr = rcon.make_discretization(mesh, order=4,
+            debug=[
+                "print_op_code",
+                "jit_dont_optimize_large_exprs",
+                ])
 
     # operator setup ----------------------------------------------------------
-    op = VlasovOperator(grid_size=20, filter_type="exponential",
-            hard_scale=5, bounded_fraction=0.8)
+    op = VlasovOperator(grid_size=48, filter_type="exponential",
+            hard_scale=5, bounded_fraction=0.8,
+            filter_parameters=dict(eta_cutoff=0.3))
 
     sine_vec = discr.interpolate_volume_function(lambda x, el: sin(x[0]))
     from hedge.tools import make_obj_array
@@ -147,7 +196,7 @@ def main():
     stepper = RK4TimeStepper()
 
     dt = discr.dt_factor(op.max_eigenvalue())
-    nsteps = int(700/dt)
+    nsteps = int(10/dt)
 
     print "%d elements, dt=%g, nsteps=%d" % (
             len(discr.mesh.elements), dt, nsteps)
@@ -171,23 +220,24 @@ def main():
     # timestep loop -----------------------------------------------------------
     rhs = op.bind(discr)
 
-    for step in xrange(nsteps):
-        logmgr.tick()
+    try:
+        for step in xrange(nsteps):
+            logmgr.tick()
 
-        t = step*dt
+            t = step*dt
 
-        if step % 20 == 0:
-            #op.visualize_densities_with_matplotlib(discr,
-                    #"vlasov-%04d.png" % step, densities)
-            op.visualize_densities_with_silo(discr,
-                    "vlasov-%04d.silo" % step, densities)
+            if step % 20 == 0:
+                #op.visualize_densities_with_matplotlib(discr,
+                        #"vlasov-%04d.png" % step, densities)
+                op.visualize_densities_with_silo(discr,
+                        "vlasov-%04d.silo" % step, densities)
 
-        densities = stepper(densities, t, dt, rhs)
+            densities = stepper(densities, t, dt, rhs)
+    finally:
+        logmgr.close()
+        discr.close()
 
-    vis.close()
 
-    logmgr.tick()
-    logmgr.save()
 
 
 if __name__ == "__main__":
