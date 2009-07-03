@@ -4,7 +4,7 @@ import numpy
 
 
 
-class VelocityDiscretization:
+class MomentumDiscretization:
     def __init__(self, grid_size, method="wiener", hard_scale=None,
             filter_type=None, filter_parameters={},
             bounded_fraction=1.):
