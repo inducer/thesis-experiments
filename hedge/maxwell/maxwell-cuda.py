@@ -113,7 +113,7 @@ def main():
     if hasattr(mesh_data, "mesh"):
         print "%d elements on rank %d" % (len(mesh_data.mesh.elements), rcon.rank)
 
-    from hedge.pde import MaxwellOperator
+    from hedge.models.em import MaxwellOperator
     op = MaxwellOperator(epsilon, mu, flux_type=1)
 
     debug_flags = [ ]
