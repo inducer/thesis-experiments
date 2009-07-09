@@ -40,6 +40,7 @@ def main():
     parser.add_option("--local-watches", action="store_true")
     parser.add_option("-d", "--debug-flags", metavar="DEBUG_FLAG,DEBUG_FLAG")
     parser.add_option("--log-file", default="maxwell-%(order)s.dat")
+    parser.add_option("--no-log-file", action="store_true")
     options, args = parser.parse_args()
     assert not args
 
@@ -157,8 +158,12 @@ def main():
     from pytools.log import LogManager, add_general_quantities, \
             add_simulation_quantities, add_run_info
 
-    logmgr = LogManager(options.log_file % {"order": options.order}, 
-            "w", rcon.communicator)
+    if options.no_log_file:
+        log_file_name = None
+    else:
+        log_file_name = options.log_file % {"order": options.order}
+
+    logmgr = LogManager(log_file_name, "w", rcon.communicator)
     add_run_info(logmgr)
     add_general_quantities(logmgr)
     add_simulation_quantities(logmgr, dt)
