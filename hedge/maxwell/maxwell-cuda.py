@@ -35,6 +35,7 @@ def main():
     parser.add_option("--vis-interval", default=0, type="int")
     parser.add_option("--profile", action="store_true")
     parser.add_option("--profile-cuda", action="store_true")
+    parser.add_option("--extra-features")
     parser.add_option("--steps", type="int")
     parser.add_option("--cpu", action="store_true")
     parser.add_option("--local-watches", action="store_true")
@@ -164,6 +165,15 @@ def main():
         log_file_name = options.log_file % {"order": options.order}
 
     logmgr = LogManager(log_file_name, "w", rcon.communicator)
+
+    if options.extra_features:
+        for feat in options.extra_features.split(","):
+            colon_index = feat.find(":")
+            if colon_index != -1:
+                logmgr.set_constant(
+                        feat[:colon_index],
+                        eval(feat[colon_index+1:]))
+
     add_run_info(logmgr)
     add_general_quantities(logmgr)
     add_simulation_quantities(logmgr, dt)
