@@ -170,9 +170,13 @@ def main():
         for feat in options.extra_features.split(","):
             colon_index = feat.find(":")
             if colon_index != -1:
-                logmgr.set_constant(
-                        feat[:colon_index],
-                        eval(feat[colon_index+1:]))
+                feat_value = feat[colon_index+1:]
+                try:
+                    feat_value = eval(feat_value)
+                except:
+                    pass
+
+                logmgr.set_constant(feat[:colon_index], feat_value)
 
     add_run_info(logmgr)
     add_general_quantities(logmgr)
