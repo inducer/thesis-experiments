@@ -40,7 +40,10 @@ AXES = ["x", "y", "z", "w"]
 
 
 
-class BLOCK_IDX_TAG:
+class IndexTag(object):
+    pass
+
+class BLOCK_IDX_TAG(IndexTag):
     def __init__(self, axis=None):
         self.axis = axis
 
@@ -57,7 +60,7 @@ class BLOCK_IDX_TAG:
     def __ne__(self, other):
         return not self.__eq__(other)
 
-class THREAD_IDX_TAG:
+class THREAD_IDX_TAG(IndexTag):
     def __init__(self, axis=None):
         self.axis = axis
 
@@ -79,6 +82,9 @@ class LoopDimension(Record):
 
     def __init__(self, name, length, tag=None):
         Record.__init__(self, name=name, length=length, tag=tag)
+
+        if tag is not None:
+            assert isinstance(tag, IndexTag)
 
     def __hash__(self):
         return hash(self.name)
@@ -428,7 +434,7 @@ def generate_dim_assignments(kernel, idx=0,
                     yield knl
             else:
                 for knl in generate_dim_assignments(
-                        kernel.change_dim(idx, tag=THREAD_IDX_TAG),
+                        kernel.change_dim(idx, tag=THREAD_IDX_TAG()),
                         idx+1,
                         no_thread_indices=no_thread_indices):
                     yield knl
@@ -802,15 +808,12 @@ class WriteOutput(Record):
 
 def make_fetch_index_expr(kernel, exclude):
     from pymbolic import var
-    expr = None
+    expr = 0
     for dim in kernel.ordered_dim_by_tag_type(THREAD_IDX_TAG)[::-1]:
         if dim in exclude:
             continue
 
-        if expr is None:
-            expr = var("threadIdx." + AXES[dim.tag.axis])
-        else:
-            expr = expr*dim.length + var("threadIdx." + AXES[dim.tag.axis])
+        expr = expr*dim.length + var("threadIdx." + AXES[dim.tag.axis])
 
     return expr
 
@@ -1206,7 +1209,51 @@ def main():
 
 
 
+def main_volume_d_dx():
+    Np =  128
+    K = 64
+    from pymbolic import var
+
+    D, g, u, p, i, j, k = [var(s) for s in "Dgupijk"]
+
+    dim = 3
+
+    ker = make_loop_kernel([
+        LoopDimension("k", K),
+        LoopDimension("j", Np),
+        LoopDimension("i", Np),
+        ], [ 
+            (p[j+Np*k], 
+                sum(g[dim*(j+Np*k)+i] * D[dim*(j+Np*i)+i] for i in range(3)) 
+                * u[i+Np*k])
+            ])
+
+    gen_kwargs = {
+            "min_threads": 128,
+            "min_blocks": 32,
+            }
+
+    if True and HAVE_CUDA:
+        if HAVE_CUDA:
+            u = curandom.rand((Np, K))
+            p = curandom.rand((Np, K))
+            g = curandom.rand((Np*3, K))
+            D = curandom.rand((Np*3, Np))
+
+        def launcher(grid, kernel, texref_lookup):
+            u.bind_to_texref_ext(texref_lookup["u"])
+            g.bind_to_texref_ext(texref_lookup["g"])
+            D.bind_to_texref_ext(texref_lookup["D"])
+            kernel.prepared_call(grid, p.gpudata)
+
+        drive_timing_run(
+                generate_all_kernels(ker, **gen_kwargs),
+                launcher, Np*Np*K)
+    else:
+        show_kernel_codes(generate_all_kernels(ker, **gen_kwargs))
+
+
+
 
 if __name__ == "__main__":
-    main()
-
+    main_volume_d_dx()
