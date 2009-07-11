@@ -139,20 +139,22 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
         self.maxwell_field_count = \
                 count_subset(self.maxwell_op.get_eh_subset())
 
-    def op_template(self):
+    def make_maxwell_eh_placeholders(self):
         max_op = self.maxwell_op
 
         from hedge.optemplate import make_vector_field
         max_fields = make_vector_field("w", self.maxwell_field_count)
-        max_e, max_h = max_op.split_eh(max_fields)
+        return max_op.split_eh(max_fields)
 
-        densities = self.make_densities_placeholder()
-
-        j = self.integral_dv(
+    def j(self, densities):
+        return self.integral_dv(
                 (self.species_charge*v)*f_i
                 for v, f_i in zip(self.velocity_points, densities))
 
-        # build forces --------------------------------------------------------
+    def forces(self, densities, max_e, max_h):
+        max_op = self.maxwell_op
+        max_e, max_h = self.make_maxwell_eh_placeholders()
+
         from hedge.optemplate import make_common_subexpression as cse
         max_b = cse(max_op.mu * max_h)
 
@@ -184,9 +186,22 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
 
         from hedge.tools import make_obj_array
         q_times_b = cse(self.species_charge*max_b)
-        forces = make_obj_array([
+        return make_obj_array([
             el_force + v_b_cross(v, q_times_b)
             for v in self.velocity_points])
+
+
+    def op_template(self):
+        from hedge.tools import join_fields
+        max_op = self.maxwell_op
+        max_e, max_h = self.make_maxwell_eh_placeholders()
+
+        densities = self.make_densities_placeholder()
+
+        j = self.j(densities)
+
+        # build forces --------------------------------------------------------
+        forces = self.forces(densities, max_e, max_h)
 
         forces_T = [[forces[v_node_idx][v_axis]
             for v_node_idx in range(self.p_discr.grid_size)]
@@ -194,18 +209,19 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
 
         # assemble rhs --------------------------------------------------------
         max_e_rhs, max_h_rhs = max_op.split_eh(
-                max_op.op_template(max_fields))
+                max_op.op_template(join_fields(max_e, max_h)))
         vlasov_rhs = VlasovOperatorBase.op_template(
                 self, forces_T, densities)
 
-        from hedge.tools import join_fields
         return join_fields(
                 max_e_rhs + j/max_op.epsilon,
                 max_h_rhs,
                 vlasov_rhs)
 
-    def bind(self, discr):
-        compiled = discr.compile(self.op_template())
+    def bind(self, discr, op_template=None):
+        if op_template is None:
+            op_template = self.op_template()
+        compiled = discr.compile(op_template)
 
         def rhs(t, q):
             max_w = q[:self.maxwell_field_count]
@@ -258,23 +274,26 @@ def visualize_densities_with_matplotlib(vlasov_op, discr, filename, densities):
 
 
 
-def add_densities_to_silo(silo, vlasov_op, discr, densities):
+def add_xv_to_silo(silo, vlasov_op, discr, 
+        names_and_quantities):
     from pylo import SiloFile, DB_NODECENT
 
     scheme_dtype = vlasov_op.p_discr.diffmat.dtype
     is_complex = scheme_dtype.kind == "c"
-    f_data = numpy.array(list(densities), dtype=scheme_dtype)
 
     silo.put_quadmesh("xpmesh", [
         discr.nodes.reshape((len(discr.nodes),)),
         vlasov_op.p_discr.quad_points_1d,
         ])
 
-    if is_complex:
-        silo.put_quadvar1("f_r", "xpmesh", f_data.real.copy(), f_data.shape, 
-                DB_NODECENT)
-        silo.put_quadvar1("f_i", "xpmesh", f_data.imag.copy(), f_data.shape, 
-                DB_NODECENT)
-    else:
-        silo.put_quadvar1("f", "xpmesh", f_data, f_data.shape, 
-                DB_NODECENT)
+    for name, quant in names_and_quantities:
+        q_data = numpy.array(list(quant), dtype=scheme_dtype)
+
+        if is_complex:
+            silo.put_quadvar1(name+"_r", "xpmesh", q_data.real.copy(), q_data.shape, 
+                    DB_NODECENT)
+            silo.put_quadvar1(name+"_i", "xpmesh", q_data.imag.copy(), q_data.shape, 
+                    DB_NODECENT)
+        else:
+            silo.put_quadvar1(name, "xpmesh", q_data, q_data.shape, 
+                    DB_NODECENT)

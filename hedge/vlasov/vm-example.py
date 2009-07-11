@@ -17,7 +17,7 @@ def main():
 
     discr = rcon.make_discretization(mesh, order=4,
             debug=[
-                "print_op_code",
+                #"print_op_code",
                 "jit_dont_optimize_large_exprs",
                 ])
 
@@ -35,8 +35,8 @@ def main():
     from vlasov import VlasovMaxwellOperator
     vlas_op = VlasovMaxwellOperator(max_op, units,
             species_mass=1, species_charge=1,
-            grid_size=8, filter_type="exponential",
-            hard_scale=5, bounded_fraction=0.8,
+            grid_size=32, filter_type="exponential",
+            hard_scale=5, bounded_fraction=0.9,
             filter_parameters=dict(eta_cutoff=0.3))
 
     sine_vec = discr.interpolate_volume_function(lambda x, el: cos(0.5*x[0]))
@@ -77,8 +77,16 @@ def main():
 
     # timestep loop -----------------------------------------------------------
     rhs = vlas_op.bind(discr)
+    j_op = vlas_op.bind(discr, vlas_op.j(
+        vlas_op.make_densities_placeholder()))
+    forces_op = vlas_op.bind(discr, vlas_op.forces(
+        vlas_op.make_densities_placeholder(),
+        *vlas_op.make_maxwell_eh_placeholders()
+        ))
 
-    from vlasov import add_densities_to_silo
+    def real_part(fld):
+        from hedge.tools import with_object_array_or_scalar
+        return with_object_array_or_scalar(lambda x: x.real, fld)
 
     try:
         for step in xrange(nsteps):
@@ -87,16 +95,21 @@ def main():
             t = step*dt
 
             if step % 20 == 0:
-                def real_part(fld):
-                    from hedge.tools import with_object_array_or_scalar
-                    return with_object_array_or_scalar(lambda x: x.real, fld)
-
                 with vis.make_file("vlasov-%04d" % step) as visf:
                     e, h, densities = vlas_op.split_e_h_densities(fields)
-                    add_densities_to_silo(visf, vlas_op, discr, densities)
+                    forces = [force_i[0] 
+                            for force_i in forces_op(t, fields)]
+
+                    from vlasov import add_xv_to_silo
+
+                    add_xv_to_silo(visf, vlas_op, discr, [
+                        ("f", densities),
+                        ("forces", forces),
+                        ])
                     vis.add_data(visf, [
                         ("e", real_part(e)),
                         ("h", real_part(h)),
+                        ("j", real_part(j_op(t, fields))),
                         ], time=t, step=step)
 
 
