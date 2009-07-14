@@ -776,7 +776,13 @@ def generate_loop_schedules(kernel):
 # code generation -------------------------------------------------------------
 class LoopyCCodeMapper(CCodeMapper):
     def __init__(self, kernel, get_prefetch_name):
-        CCodeMapper.__init__(self)
+        def constant_mapper(c):
+            if isinstance(c, float):
+                lambda x: "%sf" % repr(c)
+            else:
+                return repr(c)
+
+        CCodeMapper.__init__(self, constant_mapper=constant_mapper)
         self.kernel = kernel
         self.get_prefetch_name = get_prefetch_name
 
