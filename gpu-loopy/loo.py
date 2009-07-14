@@ -830,7 +830,7 @@ def generate_code(kernel):
     from codepy.cgen import FunctionBody, FunctionDeclaration, \
             Typedef, POD, Value, Pointer, Module, Block, \
             Initializer, Assign, Statement, For, ArrayOf, \
-            Define, If, Line, Comment
+            Define, If, Line, Comment, MaybeUnused
 
     from codepy.cgen.cuda import CudaGlobal, CudaShared
 
@@ -920,7 +920,7 @@ def generate_code(kernel):
             # start writing fetch code block
             fetch_block = Block([
                     Initializer(
-                        POD(numpy.uint32, "fetch_idx"),
+                        MaybeUnused(POD(numpy.uint32, "fetch_idx")),
                         make_fetch_index_expr(kernel, thread_pf_dims))
                     ])
                         
