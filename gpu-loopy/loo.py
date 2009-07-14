@@ -778,7 +778,7 @@ class LoopyCCodeMapper(CCodeMapper):
     def __init__(self, kernel, get_prefetch_name):
         def constant_mapper(c):
             if isinstance(c, float):
-                lambda x: "%sf" % repr(c)
+                return "%sf" % repr(c)
             else:
                 return repr(c)
 
