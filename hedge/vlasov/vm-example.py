@@ -1,4 +1,5 @@
 from __future__ import division, with_statement
+import numpy
 
 
 
@@ -18,6 +19,7 @@ def main():
     discr = rcon.make_discretization(mesh, order=4,
             debug=[
                 #"print_op_code",
+                "jit_wait_on_compile_error",
                 "jit_dont_optimize_large_exprs",
                 ])
 
@@ -33,18 +35,21 @@ def main():
             dimensions=1)
 
     from vlasov import VlasovMaxwellOperator
-    vlas_op = VlasovMaxwellOperator(max_op, units,
+    vlas_op = VlasovMaxwellOperator(
+            x_dim=1, v_dim=2,
+            maxwell_op=max_op, units=units,
             species_mass=1, species_charge=1,
-            grid_size=32, filter_type="exponential",
-            hard_scale=5, bounded_fraction=0.9,
+            grid_size=16, filter_type="exponential",
+            hard_scale=5, bounded_fraction=0.8,
             filter_parameters=dict(eta_cutoff=0.3))
 
-    sine_vec = discr.interpolate_volume_function(lambda x, el: cos(0.5*x[0]))
+    base_vec = discr.interpolate_volume_function(lambda x, el: cos(0.5*x[0]))
+    #base_vec = discr.interpolate_volume_function(lambda x, el: 1)
     from hedge.tools import make_obj_array, join_fields
 
     densities = make_obj_array([
-        sine_vec.copy()*exp(-(0.5*v[0]**2))*v[0]
-        for v in vlas_op.p_discr.quad_points])
+        base_vec*exp(-(0.5*numpy.dot(v, v)))#*v[0]
+        for v in vlas_op.v_points])
 
     fields = join_fields(
             max_op.assemble_eh(discr=discr),
@@ -79,10 +84,10 @@ def main():
     rhs = vlas_op.bind(discr)
     j_op = vlas_op.bind(discr, vlas_op.j(
         vlas_op.make_densities_placeholder()))
-    forces_op = vlas_op.bind(discr, vlas_op.forces(
-        vlas_op.make_densities_placeholder(),
-        *vlas_op.make_maxwell_eh_placeholders()
-        ))
+    forces_ops = [vlas_op.bind(discr, force_op)
+            for force_op in vlas_op.forces_T(
+                vlas_op.make_densities_placeholder(),
+                *vlas_op.make_maxwell_eh_placeholders())]
 
     def real_part(fld):
         from hedge.tools import with_object_array_or_scalar
@@ -94,17 +99,18 @@ def main():
 
             t = step*dt
 
-            if step % 20 == 0:
+            if step % 100 == 0:
                 with vis.make_file("vlasov-%04d" % step) as visf:
                     e, h, densities = vlas_op.split_e_h_densities(fields)
-                    forces = [force_i[0] 
-                            for force_i in forces_op(t, fields)]
-
                     from vlasov import add_xv_to_silo
+
+                    AXES = ["x", "y", "z"]
 
                     add_xv_to_silo(visf, vlas_op, discr, [
                         ("f", densities),
-                        ("forces", forces),
+                        ] + [
+                        ("forces"+AXES[i], force_op(t, fields))
+                        for i, force_op in enumerate(forces_ops)
                         ])
                     vis.add_data(visf, [
                         ("e", real_part(e)),

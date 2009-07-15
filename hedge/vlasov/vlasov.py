@@ -6,29 +6,85 @@ from pytools import memoize_method
 
 
 
+class TensorProductGrid:
+    def __init__(self, dim_points):
+        self.dim_points = dim_points
+        self.shape = tuple(len(dp) for dp in dim_points)
+
+    def __len__(self):
+        from pytools import product
+        return product(self.shape)
+
+    def __iter__(self):
+        from pytools import indices_in_shape
+        for i in indices_in_shape(self.shape):
+            yield self.point_from_tuple(i)
+
+    def iterindex(self):
+        from pytools import indices_in_shape
+        return indices_in_shape(self.shape)
+
+    def point_from_tuple(self, tp):
+        return numpy.array([
+            dp[i] for dp, i in zip(self.dim_points, tp)])
+
+    pft = point_from_tuple
+
+    def linear_from_tuple(self, tp):
+        result = 0
+        for shape_i, i in zip(self.shape, tp):
+            result = result*shape_i + i
+        return result
+
+    def tuple_from_linear(self, idx):
+        result = []
+        for shape_i in self.shape[::-1]:
+            result.insert(0, idx % shape_i)
+            idx //= shape_i
+        return tuple(result)
+
+
+
+
 class VlasovOperatorBase:
-    def __init__(self, units, species_mass, *args, **kwargs):
+    def __init__(self, x_dim, v_dim, units, species_mass, *args, **kwargs):
         from p_discr import MomentumDiscretization
         self.p_discr = MomentumDiscretization(*args, **kwargs)
         self.units = units
         self.species_mass = species_mass
 
-        self.v_dim = 1
+        self.x_dim = x_dim
+        self.v_dim = v_dim
 
-        self.velocity_points = [units.v_from_p(species_mass, p)
-                for p in self.p_discr.quad_points]
+        self.p_grid = TensorProductGrid(
+                v_dim*[self.p_discr.quad_points_1d])
 
         from hedge.models.advection import StrongAdvectionOperator
         self.x_adv_operators = [
-                StrongAdvectionOperator(v, flux_type="upwind")
-                for v in self.velocity_points]
+                StrongAdvectionOperator(v[:self.x_dim], flux_type="upwind")
+                for v in self.v_points]
+
+    @property
+    def v_points(self):
+        for p in self.p_grid:
+            yield self.units.v_from_p(self.species_mass, p)
+
+    @memoize_method
+    def quad_weights(self):
+        from pytools import product
+        pg = self.p_grid
+        qw = self.p_discr.quad_weights_1d
+
+        return numpy.array(
+                [product(qw[j] for j in i) for i in pg.iterindex()], 
+                dtype=numpy.float64)
 
     @memoize_method
     def make_densities_placeholder(self, base_number=0):
         from hedge.optemplate import make_vector_field
         return make_vector_field("f",
                 range(base_number, 
-                    base_number+len(self.p_discr.quad_points)))
+                    base_number+len(self.p_grid)))
 
     def op_template(self, forces_T, f=None):
         from hedge.optemplate import make_vector_field
@@ -50,13 +106,27 @@ class VlasovOperatorBase:
 
         p_discr = self.p_discr
 
-        if hasattr(p_discr, "diff_function"):
-            f_p = [p_discr.diff_function(f)]
-        else:
-            f_p = [make_obj_array([
-                sum(p_discr.diffmat[i,j]*f[j] for j in range(p_discr.grid_size))
-                for i in range(p_discr.grid_size)
-                ])]
+        #if hasattr(p_discr, "diff_function"):
+            #f_p = [p_discr.diff_function(f)]
+        #else:
+
+        p_grid = self.p_grid
+
+        def replace_tuple_entry(tp, i, new_value):
+            return tp[:i] + (new_value,) + tp[(i+1):]
+        f_p = [make_obj_array([
+            sum(
+                p_discr.diffmat[
+                    p_grid.tuple_from_linear(i)[diff_dir],
+                    j]
+                *f[p_grid.linear_from_tuple(
+                    replace_tuple_entry(
+                        p_grid.tuple_from_linear(i),
+                        diff_dir, j))]
+                for j in range(p_discr.grid_size))
+            for i in range(len(p_grid))
+            ])
+            for diff_dir in range(self.v_dim)]
 
         return make_obj_array([
                 adv_op_template(adv_op, f[i])
@@ -67,39 +137,36 @@ class VlasovOperatorBase:
                         for forces_i, f_p_i in zip(forces_T, f_p))
 
     def max_eigenvalue(self):
-        return max(la.norm(v) for v in self.velocity_points)
+        return max(la.norm(v) for v in self.v_points)
 
 
     def integral_dp(self, p_values):
-        return sum(qw_i * v_i 
-                for qw_i, v_i in zip(self.p_discr.quad_weights, values))
+        return numpy.dot(self.quad_weights(), p_values)
 
     @memoize_method
     def int_dv_quad_weights(self):
-        weights = numpy.zeros(self.p_discr.grid_size, dtype=numpy.float64)
+        weights = numpy.zeros(len(self.p_grid), dtype=numpy.float64)
         c = self.units.VACUUM_LIGHT_SPEED
-        for i, p in enumerate(self.p_discr.quad_points):
+
+        for i, p in enumerate(self.p_grid):
             p_square = numpy.dot(p, p)
             denom = p_square + c**2 * self.species_mass**2
             weights[i] =(
                     c/denom**0.5
                     - c*p_square / denom**1.5)
 
-        return weights*self.p_discr.quad_weights
+        return weights*self.quad_weights()
 
     def integral_dv(self, values):
-        return sum(qw_i * v_i 
-                for qw_i, v_i in zip(self.int_dv_quad_weights(), values))
-
-
+        return numpy.dot(self.int_dv_quad_weights(), values)
 
 
 
 
 class VlasovOperator(VlasovOperatorBase):
-    def __init__(self, units, species_mass, forces_func, 
+    def __init__(self, x_dim, v_dim, units, species_mass, forces_func, 
             *args, **kwargs):
-        VlasovOperatorBase.__init__(self, units, species_mass, 
+        VlasovOperatorBase.__init__(self, x_dim, v_dim, units, species_mass, 
                 *args, **kwargs)
         self.forces_func = forces_func
 
@@ -109,8 +176,8 @@ class VlasovOperator(VlasovOperatorBase):
 
         from hedge.tools import make_obj_array
         forces_T = [make_obj_array([force_base[i][p_axis]
-            for i, p in enumerate(self.p_discr.quad_points)])
-            for p_axis in [0]]
+            for i, p in enumerate(self.p_grid)])
+            for p_axis in range(self.v_dim)]
 
         return VlasovOperatorBase.op_template(self, forces_T)
 
@@ -128,9 +195,9 @@ class VlasovOperator(VlasovOperatorBase):
 
 
 class VlasovMaxwellOperator(VlasovOperatorBase):
-    def __init__(self, maxwell_op, units, species_mass, species_charge, 
+    def __init__(self, x_dim, v_dim, maxwell_op, units, species_mass, species_charge, 
             *args, **kwargs):
-        VlasovOperatorBase.__init__(self, units, species_mass, *args, **kwargs)
+        VlasovOperatorBase.__init__(self, x_dim, v_dim, units, species_mass, *args, **kwargs)
 
         self.maxwell_op = maxwell_op
         self.species_charge = species_charge
@@ -147,11 +214,12 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
         return max_op.split_eh(max_fields)
 
     def j(self, densities):
-        return self.integral_dv(
+        return self.integral_dv([
                 (self.species_charge*v)*f_i
-                for v, f_i in zip(self.velocity_points, densities))
+                for v, f_i in zip(self.v_points, densities)
+                ])
 
-    def forces(self, densities, max_e, max_h):
+    def forces_T(self, densities, max_e, max_h):
         max_op = self.maxwell_op
         max_e, max_h = self.make_maxwell_eh_placeholders()
 
@@ -186,13 +254,19 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
 
         from hedge.tools import make_obj_array
         q_times_b = cse(self.species_charge*max_b)
-        return make_obj_array([
+        forces = make_obj_array([
             el_force + v_b_cross(v, q_times_b)
-            for v in self.velocity_points])
+            for v in self.v_points])
 
+        return [
+                make_obj_array([
+                    forces[v_node_idx][v_axis]
+                    for v_node_idx in xrange(len(self.p_grid))
+                    ])
+                for v_axis in xrange(self.v_dim)]
 
     def op_template(self):
-        from hedge.tools import join_fields
+        from hedge.tools import join_fields, make_obj_array
         max_op = self.maxwell_op
         max_e, max_h = self.make_maxwell_eh_placeholders()
 
@@ -200,18 +274,11 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
 
         j = self.j(densities)
 
-        # build forces --------------------------------------------------------
-        forces = self.forces(densities, max_e, max_h)
-
-        forces_T = [[forces[v_node_idx][v_axis]
-            for v_node_idx in range(self.p_discr.grid_size)]
-            for v_axis in range(self.v_dim)]
-
         # assemble rhs --------------------------------------------------------
         max_e_rhs, max_h_rhs = max_op.split_eh(
                 max_op.op_template(join_fields(max_e, max_h)))
         vlasov_rhs = VlasovOperatorBase.op_template(
-                self, forces_T, densities)
+                self, self.forces_T(densities, max_e, max_h), densities)
 
         return join_fields(
                 max_e_rhs + j/max_op.epsilon,
@@ -239,7 +306,7 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
 
     def max_eigenvalue(self):
         return max(
-                max(la.norm(v) for v in self.velocity_points),
+                max(la.norm(v) for v in self.v_points),
                 self.maxwell_op.max_eigenvalue())
 
 
@@ -283,8 +350,7 @@ def add_xv_to_silo(silo, vlasov_op, discr,
 
     silo.put_quadmesh("xpmesh", [
         discr.nodes.reshape((len(discr.nodes),)),
-        vlasov_op.p_discr.quad_points_1d,
-        ])
+        ] + vlasov_op.p_grid.dim_points)
 
     for name, quant in names_and_quantities:
         q_data = numpy.array(list(quant), dtype=scheme_dtype)
@@ -297,3 +363,23 @@ def add_xv_to_silo(silo, vlasov_op, discr,
         else:
             silo.put_quadvar1(name, "xpmesh", q_data, q_data.shape, 
                     DB_NODECENT)
+
+
+
+def test_tp_grid():
+    tpg = TensorProductGrid([[5,6,7], [3,4,5]])
+
+    for i, p in enumerate(tpg):
+        tp = tpg.tuple_from_linear(i)
+        print i, tp, p
+        p2 = tpg.point_from_tuple(tp)
+
+        assert (p2 == p).all()
+        assert tpg.linear_from_tuple(tp) == i
+
+
+
+
+
+if __name__ == "__main__":
+    test_tp_grid()

@@ -1,4 +1,5 @@
 from __future__ import division, with_statement
+import numpy
 
 
 
@@ -32,20 +33,21 @@ def main():
         return force_const
 
     from vlasov import VlasovOperator
-    op = VlasovOperator(units, 1, forces,
+    op = VlasovOperator(x_dim=1, v_dim=2, units=units, 
+            species_mass=1, forces_func=forces,
             grid_size=16, filter_type="exponential",
             hard_scale=5, bounded_fraction=0.8,
             filter_parameters=dict(eta_cutoff=0.3))
 
     x_vec = discr.interpolate_volume_function(lambda x, el: x[0])
-    force_const = [[1*x_vec] for v in op.velocity_points]
+    force_const = [[1*x_vec, 0*x_vec] for p in op.p_grid]
 
     sine_vec = discr.interpolate_volume_function(lambda x, el: cos(0.5*x[0]))
     from hedge.tools import make_obj_array
 
     densities = make_obj_array([
-        sine_vec.copy()*exp(-(0.5*v[0]**2))*v[0]
-        for v in op.p_discr.quad_points])
+        sine_vec.copy()*exp(-(0.5*numpy.dot(v, v)))*v[0]
+        for v in op.v_points])
 
     # timestep setup ----------------------------------------------------------
     stepper = RK4TimeStepper()
@@ -75,7 +77,7 @@ def main():
     # timestep loop -----------------------------------------------------------
     rhs = op.bind(discr)
 
-    from vlasov import add_densities_to_silo
+    from vlasov import add_xv_to_silo
 
     try:
         for step in xrange(nsteps):
@@ -84,10 +86,12 @@ def main():
             t = step*dt
 
             if step % 20 == 0:
-                with vis.make_file("vlasov-%04d.silo" % step) as visf:
+                with vis.make_file("vlasov-%04d" % step) as visf:
                     #op.visualize_densities_with_matplotlib(discr,
                             #"vlasov-%04d.png" % step, densities)
-                    add_densities_to_silo(visf, op, discr, densities)
+                    add_xv_to_silo(visf, op, discr, [
+                        ("f", densities)
+                        ])
 
             densities = stepper(densities, t, dt, rhs)
     finally:

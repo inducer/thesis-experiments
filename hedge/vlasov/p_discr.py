@@ -71,15 +71,11 @@ class MomentumDiscretization:
         self.quad_points_1d, self.quad_weights_1d = \
             quadpoints(grid_size,**params)
 
-        self.quad_points = numpy.reshape(self.quad_points_1d,
-                (len(self.quad_points_1d), 1))
-        self.quad_weights = self.quad_weights_1d
-
         ps = function_evaluation(self.quad_points_1d,indices,**params)
         dps = derivative_evaluation(self.quad_points_1d, indices,**params)
         self.diffmat = dot(dps*filter_coefficients,ps.T.conj()*self.quad_weights_1d)
-        
+
         if method == "wiener":
             self.diff_function = lambda values: \
-                    spyctral.wiener.operators.fft_nodal_differentiation(values, 
+                    spyctral.wiener.operators.fft_nodal_differentiation(values,
                             **params)
