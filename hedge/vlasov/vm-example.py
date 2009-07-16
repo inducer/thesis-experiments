@@ -14,9 +14,9 @@ def main():
     rcon = guess_run_context()
 
     from hedge.mesh import make_uniform_1d_mesh
-    mesh = make_uniform_1d_mesh(-pi, pi, 20, periodic=True)
+    mesh = make_uniform_1d_mesh(-pi, pi, 10, periodic=True)
 
-    discr = rcon.make_discretization(mesh, order=4,
+    discr = rcon.make_discretization(mesh, order=3,
             debug=[
                 #"print_op_code",
                 "jit_wait_on_compile_error",
@@ -42,15 +42,24 @@ def main():
             species_mass=units.EL_MASS, 
             species_charge=-units.EL_CHARGE,
             grid_size=16, filter_type="exponential",
-            hard_scale=5, bounded_fraction=0.8,
+            hard_scale=0.6, bounded_fraction=0.8,
             filter_parameters=dict(eta_cutoff=0.3))
 
-    base_vec = discr.interpolate_volume_function(lambda x, el: cos(0.5*x[0]))
+    print "v grid:", [units.v_from_p(vlas_op.species_mass, p)
+            for p in vlas_op.p_discr.quad_points_1d]
+
+    #base_vec = discr.interpolate_volume_function(
+            #lambda x, el: cos(0.5*x[0]))
+    base_vec = discr.interpolate_volume_function(
+            lambda x, el: 1+cos(2*x[0]))
     #base_vec = discr.interpolate_volume_function(lambda x, el: 1)
     from hedge.tools import make_obj_array, join_fields
 
+    v_stretch = numpy.array([2,1])
     densities = make_obj_array([
-        base_vec*exp(-(0.5*numpy.dot(v, v)))#*v[0]
+        base_vec*exp(
+            -(32*units.VACUUM_LIGHT_SPEED() 
+                * numpy.dot(v, v_stretch*v)))#*v[0]
         for v in vlas_op.v_points])
 
     fields = join_fields(
@@ -61,7 +70,7 @@ def main():
     stepper = RK4TimeStepper()
 
     dt = discr.dt_factor(vlas_op.max_eigenvalue())
-    nsteps = int(10/dt)
+    nsteps = int(100/dt)
 
     print "%d elements, dt=%g, nsteps=%d" % (
             len(discr.mesh.elements), dt, nsteps)
