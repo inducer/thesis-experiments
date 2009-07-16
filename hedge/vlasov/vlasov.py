@@ -114,6 +114,7 @@ class VlasovOperatorBase:
 
         def replace_tuple_entry(tp, i, new_value):
             return tp[:i] + (new_value,) + tp[(i+1):]
+
         f_p = [make_obj_array([
             sum(
                 p_discr.diffmat[
@@ -330,6 +331,18 @@ def add_xv_to_silo(silo, vlasov_op, discr,
 
     for name, quant in names_and_quantities:
         q_data = numpy.array(list(quant), dtype=scheme_dtype)
+
+        dim_lengths = (
+                tuple(len(dp) for dp in vlasov_op.p_grid.dim_points)
+                + (len(discr.nodes),))
+
+        v_dim = vlasov_op.v_dim
+
+        q_data = numpy.reshape(q_data, dim_lengths)
+        q_data = q_data.transpose(
+                 tuple(range(v_dim-1, -1, -1))
+                 + (v_dim,)
+                 )
 
         if is_complex:
             silo.put_quadvar1(name+"_r", "xpmesh", q_data.real.copy(), q_data.shape, 
