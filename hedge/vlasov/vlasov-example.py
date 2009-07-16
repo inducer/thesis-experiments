@@ -35,7 +35,7 @@ def main():
     op = VlasovOperator(units, 1, forces,
             grid_size=16, filter_type="exponential",
             hard_scale=5, bounded_fraction=0.8,
-            filter_parameters=dict(eta_cutoff=0.3))
+            filter_parameters=dict(preservation_ratio=0.3))
 
     x_vec = discr.interpolate_volume_function(lambda x, el: x[0])
     force_const = [[1*x_vec] for v in op.velocity_points]
