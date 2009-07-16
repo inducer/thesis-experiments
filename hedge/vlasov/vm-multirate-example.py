@@ -1,11 +1,11 @@
 from __future__ import division, with_statement
 import numpy
+import numpy.linalg as la
 
 
 
 
 def main():
-    from hedge.timestep import RK4TimeStepper
     from hedge.tools import mem_checkpoint
     from math import sin, cos, pi, sqrt, exp
     from math import floor
@@ -41,30 +41,51 @@ def main():
             maxwell_op=max_op, units=units,
             species_mass=units.EL_MASS, 
             species_charge=-units.EL_CHARGE,
-            grid_size=16, filter_type="exponential",
-            hard_scale=5, bounded_fraction=0.8,
+            grid_size=4, filter_type="exponential",
+            hard_scale=0.2, bounded_fraction=0.8,
             filter_parameters=dict(eta_cutoff=0.3))
 
     base_vec = discr.interpolate_volume_function(lambda x, el: cos(0.5*x[0]))
     #base_vec = discr.interpolate_volume_function(lambda x, el: 1)
     from hedge.tools import make_obj_array, join_fields
 
+    from vlasov import find_multirate_split
+    v_points = list(vlas_op.v_points)
+    substep_counts, rate_index_groups = find_multirate_split(v_points, 2)
+
+    if False:
+        for rig in rate_index_groups:
+            print [vlas_op.p_grid.tuple_from_linear(i) for i in rig], \
+                    max(la.norm(v_points[i]) for i in rig)
+        print "substep counts:", substep_counts
+
     densities = make_obj_array([
         base_vec*exp(-(0.5*numpy.dot(v, v)))#*v[0]
         for v in vlas_op.v_points])
 
-    fields = join_fields(
+    densities_by_rate_group = [densities[rig] for rig in rate_index_groups]
+
+    # em fields and fastest densities propagate at about the
+    # speed of light, so stick them in the same rate group
+    fields = ([join_fields(
             max_op.assemble_eh(discr=discr),
-            densities)
+            densities_by_rate_group[0])]
+            + densities_by_rate_group[1:])
 
     # timestep setup ----------------------------------------------------------
-    stepper = RK4TimeStepper()
+    ab_order = 3
+    from hedge.timestep.ab import AdamsBashforthTimeStepper
+    from hedge.timestep.multirate_ab import TwoRateAdamsBashforthTimeStepper
+    stepper = TwoRateAdamsBashforthTimeStepper(
+            "fastest_first_1a", 
+            large_dt=discr.dt_factor(vlas_op.max_eigenvalue(),
+                AdamsBashforthTimeStepper, ab_order),
+            order=3, substep_count=substep_counts[0])
 
-    dt = discr.dt_factor(vlas_op.max_eigenvalue())
-    nsteps = int(10/dt)
+    nsteps = int(10/stepper.large_dt)
 
     print "%d elements, dt=%g, nsteps=%d" % (
-            len(discr.mesh.elements), dt, nsteps)
+            len(discr.mesh.elements), stepper.large_dt, nsteps)
 
     # diagnostics setup -------------------------------------------------------
     from pytools.log import LogManager, \
@@ -75,17 +96,44 @@ def main():
     logmgr = LogManager("vmax.dat", "w", rcon.communicator)
     add_run_info(logmgr)
     add_general_quantities(logmgr)
-    add_simulation_quantities(logmgr, dt)
+    add_simulation_quantities(logmgr, stepper.large_dt)
     discr.add_instrumentation(logmgr)
-
-    stepper.add_instrumentation(logmgr)
 
     logmgr.add_watches(["step.max", "t_sim.max", "t_step.max"])
 
     # timestep loop -----------------------------------------------------------
-    rhs = vlas_op.bind(discr)
-    j_op = vlas_op.bind(discr, vlas_op.j(
-        vlas_op.make_densities_placeholder()))
+    def bind(op_template):
+        compiled = discr.compile(op_template)
+
+        def rhs(t, q_fast, q_slow):
+            q = join_fields(q_fast(), q_slow())
+            max_w = q[:vlas_op.maxwell_field_count]
+            densities = q[vlas_op.maxwell_field_count:]
+
+            return compiled(w=max_w, f=densities)
+
+        return rhs
+
+    from hedge.tools import join_fields
+    from vlasov import split_optemplate_for_multirate
+    rhs_optemplates = split_optemplate_for_multirate(
+                join_fields(
+                    [0]*vlas_op.maxwell_field_count, # leave Maxwell fields alone
+                    vlas_op.make_densities_placeholder()),
+                vlas_op.op_template(),
+                [numpy.hstack([[0,1], rate_index_groups[0] + vlas_op.maxwell_field_count])]
+                + [ig+vlas_op.maxwell_field_count for ig in rate_index_groups[1:]])
+
+    for i, ot in enumerate(rhs_optemplates):
+        print "--------------------------------------------"
+        print i
+        for j, otc in enumerate(ot):
+            print j, otc
+            print
+
+    rhss = [bind(optemplate) for optemplate in rhs_optemplates]
+
+    j_op = vlas_op.bind(discr, vlas_op.j(vlas_op.make_densities_placeholder()))
 
     forces_ops = [vlas_op.bind(discr, force_op)
             for force_op in vlas_op.forces_T(
@@ -100,11 +148,13 @@ def main():
         for step in xrange(nsteps):
             logmgr.tick()
 
-            t = step*dt
+            t = step*stepper.large_dt
 
             if step % 20 == 0:
                 with vis.make_file("vlasov-%04d" % step) as visf:
-                    e, h, densities = vlas_op.split_e_h_densities(fields)
+                    joint_fields = join_fields(*fields)
+                    e, h, densities = vlas_op.split_e_h_densities(
+                            joint_fields)
                     from vlasov import add_xv_to_silo
 
                     AXES = ["x", "y", "z"]
@@ -112,18 +162,16 @@ def main():
                     add_xv_to_silo(visf, vlas_op, discr, [
                         ("f", densities),
                         ] + [
-                        ("forces"+AXES[i], force_op(t, fields))
+                        ("forces"+AXES[i], force_op(t, joint_fields))
                         for i, force_op in enumerate(forces_ops)
                         ])
                     vis.add_data(visf, [
                         ("e", real_part(e)),
                         ("h", real_part(h)),
-                        ("j", real_part(j_op(t, fields))),
+                        ("j", real_part(j_op(t, joint_fields))),
                         ], time=t, step=step)
 
-
-
-            fields = stepper(fields, t, dt, rhs)
+            fields = stepper(fields, t, rhss)
     finally:
         logmgr.close()
         discr.close()

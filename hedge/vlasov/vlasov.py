@@ -140,13 +140,15 @@ class VlasovOperatorBase:
         return max(la.norm(v) for v in self.v_points)
 
 
-    def integral_dp(self, p_values):
-        return numpy.dot(self.quad_weights(), p_values)
+    def integral_dp(self, values):
+        return sum(qw_i*val_i
+                for qw_i, val_i in 
+                zip(self.quad_weights(), values))
 
     @memoize_method
     def int_dv_quad_weights(self):
         weights = numpy.zeros(len(self.p_grid), dtype=numpy.float64)
-        c = self.units.VACUUM_LIGHT_SPEED
+        c = self.units.VACUUM_LIGHT_SPEED()
 
         for i, p in enumerate(self.p_grid):
             p_square = numpy.dot(p, p)
@@ -158,7 +160,9 @@ class VlasovOperatorBase:
         return weights*self.quad_weights()
 
     def integral_dv(self, values):
-        return numpy.dot(self.int_dv_quad_weights(), values)
+        return sum(qw_i*val_i
+                for qw_i, val_i in 
+                zip(self.int_dv_quad_weights(), values))
 
 
 
@@ -313,34 +317,6 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
 
 
 
-def visualize_densities_with_matplotlib(vlasov_op, discr, filename, densities):
-    left, right = discr.mesh.bounding_box()
-    left = left[0]
-    right = right[0]
-
-    img_data = numpy.array(list(densities))
-    from matplotlib.pyplot import imshow, savefig, \
-            xlabel, ylabel, colorbar, clf, yticks
-
-    clf()
-    imshow(img_data, extent=(left, right, -1, 1))
-
-    xlabel("$x$")
-    ylabel("$p$")
-
-    ytick_step = int(round(vlasov_op.p_discr.grid_size / 8))
-    yticks(
-            numpy.linspace(
-                -1, 1, vlasov_op.p_discr.grid_size)[::ytick_step],
-            ["%.3f" % vn for vn in 
-                vlasov_op.p_discr.quad_points_1d[::ytick_step]])
-    colorbar()
-
-    savefig(filename)
-
-
-
-
 def add_xv_to_silo(silo, vlasov_op, discr, 
         names_and_quantities):
     from pylo import SiloFile, DB_NODECENT
@@ -366,12 +342,91 @@ def add_xv_to_silo(silo, vlasov_op, discr,
 
 
 
+def find_multirate_split(v_points, levels=2):
+    def generate_splits_and_work_amount(v_points_with_indices):
+        max_v_fast = la.norm(v_points_with_indices[-1][1])
+        for first_fast_index in range(1, len(v_points_with_indices)):
+            max_v_slow = la.norm(v_points_with_indices[first_fast_index-1][1])
+
+            from math import ceil
+            substep_count = int(ceil(max_v_fast / max_v_slow))
+
+            fast_v_points_with_indices = v_points_with_indices[first_fast_index:]
+            slow_v_points_with_indices = v_points_with_indices[:first_fast_index]
+
+            yield ((substep_count, [fast_v_points_with_indices, slow_v_points_with_indices]),
+                    first_fast_index/substep_count + len(fast_v_points_with_indices),
+                    )
+
+    v_points_with_indices = list(enumerate(v_points))
+    v_points_with_indices.sort(
+            key=lambda (i, v): la.norm(v))
+
+    if levels < 2:
+        raise ValueError("invalid level count")
+
+    from pytools import argmin2
+    substep_counts = []
+    rate_groups = []
+    for level in range(levels-1):
+        substep_count, (fast_group, v_points_with_indices) = \
+                argmin2(generate_splits_and_work_amount(v_points_with_indices))
+        substep_counts.append(substep_count)
+        rate_groups.append(fast_group)
+
+    rate_groups.append(v_points_with_indices)
+
+    # peel away the velocities before returning rate groups
+    return substep_counts, [numpy.array([idx for idx, v in rg], dtype=numpy.intp)
+            for rg in rate_groups]
+
+
+
+
+def split_optemplate_for_multirate(state_vector, op_template, 
+        index_groups):
+    class IndexGroupKillerSubstMap:
+        def __init__(self, kill_set):
+            self.kill_set = kill_set
+
+        def __call__(self, expr):
+            if expr in kill_set:
+                return 0
+            else:
+                return None
+
+    # make IndexGroupKillerSubstMap that kill everything
+    # *except* what's in that index group
+    killers = []
+    for i in range(len(index_groups)):
+        kill_set = set()
+        for j in range(len(index_groups)):
+            if i != j:
+                kill_set |= set(index_groups[j])
+
+        killers.append(IndexGroupKillerSubstMap(kill_set))
+
+    from hedge.optemplate import \
+            SubstitutionMapper, \
+            CommutativeConstantFoldingMapper
+
+    return [
+            CommutativeConstantFoldingMapper()(
+                SubstitutionMapper(killer)(
+                    op_template[ig]))
+            for ig in index_groups
+            for killer in killers]
+
+
+
+
+
+# tests -----------------------------------------------------------------------
 def test_tp_grid():
     tpg = TensorProductGrid([[5,6,7], [3,4,5]])
 
     for i, p in enumerate(tpg):
         tp = tpg.tuple_from_linear(i)
-        print i, tp, p
         p2 = tpg.point_from_tuple(tp)
 
         assert (p2 == p).all()
@@ -380,6 +435,15 @@ def test_tp_grid():
 
 
 
+def test_mrab_split():
+    from p_discr import MomentumDiscretization
+    pd = MomentumDiscretization(
+            grid_size=16, filter_type="exponential",
+            hard_scale=5, bounded_fraction=0.8,
+            filter_parameters=dict(eta_cutoff=0.3))
+    print best_tworate_split(pd.quad_points_1d)
+
 
 if __name__ == "__main__":
     test_tp_grid()
+    test_mrab_split()
