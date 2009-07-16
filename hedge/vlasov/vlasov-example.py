@@ -37,7 +37,7 @@ def main():
             species_mass=1, forces_func=forces,
             grid_size=16, filter_type="exponential",
             hard_scale=5, bounded_fraction=0.8,
-            filter_parameters=dict(eta_cutoff=0.3))
+            filter_parameters=dict(preservation_ratio=0.3))
 
     x_vec = discr.interpolate_volume_function(lambda x, el: x[0])
     force_const = [[1*x_vec, 0*x_vec] for p in op.p_grid]
