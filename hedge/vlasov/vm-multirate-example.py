@@ -41,7 +41,7 @@ def main():
             maxwell_op=max_op, units=units,
             species_mass=units.EL_MASS, 
             species_charge=-units.EL_CHARGE,
-            grid_size=4, filter_type="exponential",
+            grid_size=16, filter_type="exponential",
             hard_scale=0.2, bounded_fraction=0.8,
             filter_parameters=dict(eta_cutoff=0.3))
 
@@ -71,6 +71,16 @@ def main():
             max_op.assemble_eh(discr=discr),
             densities_by_rate_group[0])]
             + densities_by_rate_group[1:])
+
+    mfc = vlas_op.maxwell_field_count
+    joint_mr_to_field_map = numpy.empty(len(vlas_op.p_grid)+mfc, dtype=numpy.intp)
+    joint_mr_to_field_map[:mfc] = numpy.arange(mfc)
+    base = 0
+    for rig in rate_index_groups:
+        joint_mr_to_field_map[mfc+rig] = mfc+base+numpy.arange(len(rig))
+        base += len(rig)
+
+    print joint_mr_to_field_map
 
     # timestep setup ----------------------------------------------------------
     ab_order = 3
@@ -106,7 +116,7 @@ def main():
         compiled = discr.compile(op_template)
 
         def rhs(t, q_fast, q_slow):
-            q = join_fields(q_fast(), q_slow())
+            q = join_fields(q_fast(), q_slow())[joint_mr_to_field_map]
             max_w = q[:vlas_op.maxwell_field_count]
             densities = q[vlas_op.maxwell_field_count:]
 
@@ -121,15 +131,20 @@ def main():
                     [0]*vlas_op.maxwell_field_count, # leave Maxwell fields alone
                     vlas_op.make_densities_placeholder()),
                 vlas_op.op_template(),
-                [numpy.hstack([[0,1], rate_index_groups[0] + vlas_op.maxwell_field_count])]
+                [numpy.hstack([
+                    numpy.arange(vlas_op.maxwell_field_count),
+                    rate_index_groups[0] + vlas_op.maxwell_field_count
+                    ])
+                    ]
                 + [ig+vlas_op.maxwell_field_count for ig in rate_index_groups[1:]])
 
-    for i, ot in enumerate(rhs_optemplates):
-        print "--------------------------------------------"
-        print i
-        for j, otc in enumerate(ot):
-            print j, otc
-            print
+    if False:
+        for i, ot in enumerate(rhs_optemplates):
+            print "--------------------------------------------"
+            print i
+            for j, otc in enumerate(ot):
+                print j, otc
+                print
 
     rhss = [bind(optemplate) for optemplate in rhs_optemplates]
 
@@ -152,7 +167,7 @@ def main():
 
             if step % 20 == 0:
                 with vis.make_file("vlasov-%04d" % step) as visf:
-                    joint_fields = join_fields(*fields)
+                    joint_fields = join_fields(*fields)[joint_mr_to_field_map]
                     e, h, densities = vlas_op.split_e_h_densities(
                             joint_fields)
                     from vlasov import add_xv_to_silo
