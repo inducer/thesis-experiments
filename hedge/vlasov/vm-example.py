@@ -43,7 +43,7 @@ def main():
             species_charge=-units.EL_CHARGE,
             grid_size=16, filter_type="exponential",
             hard_scale=0.6, bounded_fraction=0.8,
-            filter_parameters=dict(eta_cutoff=0.3))
+            filter_parameters=dict(preservation_ratio=0.3))
 
     print "v grid:", [units.v_from_p(vlas_op.species_mass, p)
             for p in vlas_op.p_discr.quad_points_1d]

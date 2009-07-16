@@ -43,7 +43,7 @@ def main():
             species_charge=-units.EL_CHARGE,
             grid_size=16, filter_type="exponential",
             hard_scale=0.2, bounded_fraction=0.8,
-            filter_parameters=dict(eta_cutoff=0.3))
+            filter_parameters=dict(preservation_ratio=0.3))
 
     base_vec = discr.interpolate_volume_function(lambda x, el: cos(0.5*x[0]))
     #base_vec = discr.interpolate_volume_function(lambda x, el: 1)
