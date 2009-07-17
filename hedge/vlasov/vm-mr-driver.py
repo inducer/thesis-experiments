@@ -13,15 +13,11 @@ def main():
     from hedge.backends import guess_run_context
     rcon = guess_run_context()
 
-    from hedge.mesh import make_uniform_1d_mesh
-    mesh = make_uniform_1d_mesh(-pi, pi, 20, periodic=True)
+    from vm_interface import VlasovMaxwellCPyUserInterface
+    setup = VlasovMaxwellCPyUserInterface().gather()
 
-    discr = rcon.make_discretization(mesh, order=4,
-            debug=[
-                #"print_op_code",
-                "jit_wait_on_compile_error",
-                "jit_dont_optimize_large_exprs",
-                ])
+    discr = rcon.make_discretization(setup.x_mesh, order=setup.x_dg_order,
+            debug=setup.discr_debug_flags+[ "jit_dont_optimize_large_exprs", ])
 
     from hedge.visualization import SiloVisualizer
     vis = SiloVisualizer(discr, rcon)
@@ -31,22 +27,17 @@ def main():
     units = SIUnitsWithUnityConstants()
 
     from hedge.models.em import TE1DMaxwellOperator
-    max_op = TE1DMaxwellOperator(
-            units.EPSILON0, units.MU0, 
-            flux_type=1, dimensions=1)
+    max_op = TE1DMaxwellOperator(setup.epsilon, setup.mu, 
+            flux_type=1, dimensions=setup.x_mesh.dimensions)
 
     from vlasov import VlasovMaxwellOperator
     vlas_op = VlasovMaxwellOperator(
-            x_dim=mesh.dimensions, v_dim=2,
-            maxwell_op=max_op, units=units,
-            species_mass=units.EL_MASS, 
-            species_charge=-units.EL_CHARGE,
-            grid_size=16, filter_type="exponential",
-            hard_scale=0.2, bounded_fraction=0.8,
-            filter_parameters=dict(preservation_ratio=0.3))
+            x_dim=setup.x_mesh.dimensions, v_dim=setup.v_dim,
+            maxwell_op=max_op, units=setup.units,
+            species_mass=setup.species_mass, 
+            species_charge=setup.species_charge,
+            grid_size=setup.p_grid_size, **setup.p_discr_args)
 
-    base_vec = discr.interpolate_volume_function(lambda x, el: cos(0.5*x[0]))
-    #base_vec = discr.interpolate_volume_function(lambda x, el: 1)
     from hedge.tools import make_obj_array, join_fields
 
     from vlasov import find_multirate_split
@@ -59,17 +50,18 @@ def main():
                     max(la.norm(v_points[i]) for i in rig)
         print "substep counts:", substep_counts
 
-    densities = make_obj_array([
-        base_vec*exp(-(0.5*numpy.dot(v, v)))#*v[0]
-        for v in vlas_op.v_points])
+    densities = setup.get_densities(discr, vlas_op)
 
     densities_by_rate_group = [densities[rig] for rig in rate_index_groups]
+
+    def get_max_fields():
+        e, h = setup.get_eh(discr, vlas_op, densities)
+        return max_op.assemble_eh(e=e, h=h, discr=discr)
 
     # em fields and fastest densities propagate at about the
     # speed of light, so stick them in the same rate group
     fields = ([join_fields(
-            max_op.assemble_eh(discr=discr),
-            densities_by_rate_group[0])]
+            get_max_fields(), densities_by_rate_group[0])]
             + densities_by_rate_group[1:])
 
     mfc = vlas_op.maxwell_field_count
@@ -80,8 +72,6 @@ def main():
         joint_mr_to_field_map[mfc+rig] = mfc+base+numpy.arange(len(rig))
         base += len(rig)
 
-    print joint_mr_to_field_map
-
     # timestep setup ----------------------------------------------------------
     ab_order = 3
     from hedge.timestep.ab import AdamsBashforthTimeStepper
@@ -89,10 +79,10 @@ def main():
     stepper = TwoRateAdamsBashforthTimeStepper(
             "fastest_first_1a", 
             large_dt=discr.dt_factor(vlas_op.max_eigenvalue(),
-                AdamsBashforthTimeStepper, ab_order),
+                AdamsBashforthTimeStepper, ab_order) * setup.dt_scale,
             order=3, substep_count=substep_counts[0])
 
-    nsteps = int(10/stepper.large_dt)
+    nsteps = int(setup.final_time/stepper.large_dt)
 
     print "%d elements, dt=%g, nsteps=%d" % (
             len(discr.mesh.elements), stepper.large_dt, nsteps)
@@ -165,8 +155,8 @@ def main():
 
             t = step*stepper.large_dt
 
-            if step % 20 == 0:
-                with vis.make_file("vlasov-%04d" % step) as visf:
+            if step % setup.vis_interval == 0:
+                with vis.make_file("vmax-%04d" % step) as visf:
                     joint_fields = join_fields(*fields)[joint_mr_to_field_map]
                     e, h, densities = vlas_op.split_e_h_densities(
                             joint_fields)
