@@ -49,6 +49,7 @@ class MomentumDiscretization:
                 spyctral.CesaroFilter(self.grid_size,**filter_parameters)
         else:
             raise ValueError("invalid filter specification %s" % filter_type)
+        self.basis.initialize_filter(self.filter)
 
         self.quad_points_1d, self.quad_weights_1d = \
             self.basis.quadrature.nodes, self.basis.quadrature.weights
@@ -63,4 +64,8 @@ class MomentumDiscretization:
                 self.basis.initialize_fft()
                 self.diff_function = self.basis.fft_differentiation
         self.apply_filter = self.basis.apply_spectral_filter_to_nodes
+
+        self.basis.make_spectral_filter_matrix_for_nodes()
+        self.filter_matrix = self.basis.spectral_filter_matrix_for_nodes
+        self.diffmat = dot(self.filter_matrix,self.diffmat)
         #self.filter(nodal_evaluations)
