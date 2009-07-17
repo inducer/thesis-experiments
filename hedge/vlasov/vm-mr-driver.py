@@ -44,7 +44,7 @@ def main():
     v_points = list(vlas_op.v_points)
     substep_counts, rate_index_groups = find_multirate_split(v_points, 2)
 
-    if False:
+    if True:
         for rig in rate_index_groups:
             print [vlas_op.p_grid.tuple_from_linear(i) for i in rig], \
                     max(la.norm(v_points[i]) for i in rig)
@@ -76,10 +76,13 @@ def main():
     ab_order = 3
     from hedge.timestep.ab import AdamsBashforthTimeStepper
     from hedge.timestep.multirate_ab import TwoRateAdamsBashforthTimeStepper
+
+    large_dt = (setup.multirate_dt_scale * setup.dt_scale 
+            * discr.dt_factor(vlas_op.max_eigenvalue(),
+                AdamsBashforthTimeStepper, ab_order))
+
     stepper = TwoRateAdamsBashforthTimeStepper(
-            "fastest_first_1a", 
-            large_dt=discr.dt_factor(vlas_op.max_eigenvalue(),
-                AdamsBashforthTimeStepper, ab_order) * setup.dt_scale,
+            "fastest_first_1a", large_dt=large_dt,
             order=3, substep_count=substep_counts[0])
 
     nsteps = int(setup.final_time/stepper.large_dt)

@@ -21,6 +21,7 @@ class VlasovMaxwellCPyUserInterface(pytools.CPyUserInterface):
         variables = {
                 "final_time": None,
                 "dt_scale": 1,
+                "multirate_dt_scale": 1,
 
                 "units": None,
 
@@ -34,11 +35,7 @@ class VlasovMaxwellCPyUserInterface(pytools.CPyUserInterface):
 
                 "v_dim": None,
                 "p_grid_size": None,
-                "p_discr_args": dict(
-                    filter_type="exponential",
-                    hard_scale=0.6, 
-                    bounded_fraction=0.8,
-                    filter_parameters=dict(preservation_ratio=0.3)),
+                "p_discr_args": None,
 
                 "species_mass": None,
                 "species_charge": None,
@@ -61,7 +58,8 @@ class VlasovMaxwellCPyUserInterface(pytools.CPyUserInterface):
                     setup.x_element_count, periodic=True)
 
         must_specify = ["species_mass", "species_charge",
-                "v_dim", "p_grid_size", "final_time"]
+                "v_dim", "p_grid_size", "final_time",
+                "p_discr_args"]
 
         for name in must_specify:
             if getattr(setup, name) is None:
