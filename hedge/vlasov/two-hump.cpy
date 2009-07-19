@@ -26,6 +26,7 @@ species_mass = units.EL_MASS
 species_charge = -units.EL_CHARGE
 
 final_time = 100
+dt_scale = 0.4
 multirate_dt_scale = 0.1
 vis_interval = 5
 
@@ -37,8 +38,8 @@ _p_discr_args = dict(
         filter_parameters=dict(preservation_ratio=0.3))
 
 p_discrs = [
-        PDiscr(4, **_p_discr_args),
-        PDiscr(4, **_p_discr_args),
+        PDiscr(16, **_p_discr_args),
+        PDiscr(16, **_p_discr_args),
         ]
 
 _v_dim = len(p_discrs)
