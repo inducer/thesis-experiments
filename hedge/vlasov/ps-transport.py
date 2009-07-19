@@ -14,11 +14,12 @@ def main():
     rcon = guess_run_context()
 
     from hedge.mesh import make_uniform_1d_mesh
-    mesh = make_uniform_1d_mesh(-pi, pi, 20, periodic=True)
+    mesh = make_uniform_1d_mesh(-pi/8, pi/8, 10, periodic=True)
 
-    discr = rcon.make_discretization(mesh, order=4,
+    discr = rcon.make_discretization(mesh, order=3,
             debug=[
                 #"print_op_code",
+                "jit_wait_on_compile_error",
                 "jit_dont_optimize_large_exprs",
                 ])
 
@@ -26,33 +27,42 @@ def main():
     vis = SiloVisualizer(discr, rcon)
 
     # operator setup ----------------------------------------------------------
-    from pyrticle.units import SI
-    units = SI()
+    from pyrticle.units import SIUnitsWithUnityConstants
+    units = SIUnitsWithUnityConstants()
 
-    def forces(t):
-        return force_const
+    def forces_T(t):
+        return force_T_const
 
     from vlasov import PhaseSpaceTransportOperator
-    op = PhaseSpaceTransportOperator(x_dim=1, v_dim=2, units=units, 
-            species_mass=1, forces_func=forces,
-            grid_size=16, filter_type="exponential",
-            hard_scale=5, bounded_fraction=0.8,
-            filter_parameters=dict(preservation_ratio=0.3))
+    from p_discr import MomentumDiscretization
+    op = PhaseSpaceTransportOperator(x_discr=discr, 
+            p_discrs=[
+                MomentumDiscretization(32,
+                    filter_type="exponential",
+                    hard_scale=0.6, 
+                    bounded_fraction=0.8,
+                    filter_parameters=dict(preservation_ratio=0.3))],
+            units=units, species_mass=1, forces_T_func=forces_T)
 
-    x_vec = discr.interpolate_volume_function(lambda x, el: x[0])
-    force_const = [[1*x_vec, 0*x_vec] for p in op.p_grid]
-
-    sine_vec = discr.interpolate_volume_function(lambda x, el: cos(0.5*x[0]))
     from hedge.tools import make_obj_array
 
+    x_vec = discr.interpolate_volume_function(lambda x, el: x[0])
+    force_T_const = [
+            make_obj_array([-1*x_vec for p in op.p_grid]),
+            make_obj_array([0*x_vec for p in op.p_grid]),
+            ]
+
+    sine_vec = discr.interpolate_volume_function(
+            lambda x, el: cos(4*x[0]))
+
     densities = make_obj_array([
-        sine_vec.copy()*exp(-(0.5*numpy.dot(v, v)))*v[0]
+        sine_vec.copy()*exp(-(32*numpy.dot(v, v)))*v[0]
         for v in op.v_points])
 
     # timestep setup ----------------------------------------------------------
     stepper = RK4TimeStepper()
 
-    dt = discr.dt_factor(op.max_eigenvalue())
+    dt = discr.dt_factor(op.max_eigenvalue()) * 0.075
     nsteps = int(10/dt)
 
     print "%d elements, dt=%g, nsteps=%d" % (
@@ -75,9 +85,7 @@ def main():
     logmgr.add_watches(["step.max", "t_sim.max", "t_step.max"])
 
     # timestep loop -----------------------------------------------------------
-    rhs = op.bind(discr)
-
-    from vlasov import add_xv_to_silo
+    from vlasov import add_xp_to_silo
 
     try:
         for step in xrange(nsteps):
@@ -89,11 +97,11 @@ def main():
                 with vis.make_file("vlasov-%04d" % step) as visf:
                     #op.visualize_densities_with_matplotlib(discr,
                             #"vlasov-%04d.png" % step, densities)
-                    add_xv_to_silo(visf, op, discr, [
+                    add_xp_to_silo(visf, op, discr, [
                         ("f", densities)
                         ])
 
-            densities = stepper(densities, t, dt, rhs)
+            densities = stepper(densities, t, dt, op)
     finally:
         logmgr.close()
         discr.close()

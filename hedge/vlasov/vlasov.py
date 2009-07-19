@@ -43,8 +43,12 @@ class TensorProductGrid:
             idx //= shape_i
         return tuple(result)
 
-    def to_nd_array(self, linear_array):
-        result = numpy.zeros(self.shape, dtype=object)
+    def to_nd_array(self, linear_array, obj_array=True):
+        if obj_array:
+            result = numpy.zeros(self.shape, dtype=object)
+        else:
+            result = numpy.zeros(self.shape+linear_array[0].shape, 
+                    dtype=linear_array[0].dtype)
         for idx_tuple, entry in zip(self.iterindex(), linear_array):
             result[idx_tuple] = entry
 
@@ -58,24 +62,79 @@ class TensorProductGrid:
         return result
 
 
+
+
+class AdvectionOperator:
+    def __init__(self, dimensions):
+        self.dimensions = dimensions
+
+    def flux(self):
+        from hedge.flux import \
+                make_normal, FluxScalarPlaceholder, IfPositive, \
+                FluxScalarParameter
+
+        from hedge.tools import make_obj_array
+        v = make_obj_array([
+            FluxScalarParameter("v%d" % i) 
+            for i in range(self.dimensions)])
+
+        u = FluxScalarPlaceholder(0)
+        normal = make_normal(self.dimensions)
+
+        weak_flux = (numpy.dot(normal, v)*
+                IfPositive(numpy.dot(normal, v),
+                    u.int, # outflow
+                    u.ext, # inflow
+                    ))
+
+        return u.int * numpy.dot(normal, v) - weak_flux
+
+    def op_template(self):
+        from hedge.optemplate import Field, pair_with_boundary, \
+                get_flux_operator, make_nabla, InverseMassOperator, \
+                ScalarParameter
+
+        from hedge.tools import make_obj_array
+        v = make_obj_array([
+            ScalarParameter("v%d" % i) 
+            for i in range(self.dimensions)])
+
+        u = Field("u")
+        flux_op = get_flux_operator(self.flux())
+
+        return (-numpy.dot(v, make_nabla(self.dimensions)*u)
+                + InverseMassOperator()*(flux_op * u))
+
+    def bind(self, discr):
+        compiled_op_template = discr.compile(self.op_template())
+
+        def rhs(v, t, u):
+            velocity_constants = dict(
+                    ("v%d" % i, v[i]) 
+                    for i in range(self.dimensions))
+
+            return compiled_op_template(u=u, **velocity_constants)
+
+        return rhs
+
+
+
+
 class VlasovOperatorBase:
-    def __init__(self, x_dim, p_discrs, units, species_mass,
+    def __init__(self, x_discr, p_discrs, units, species_mass,
             use_fft=False):
         from p_discr import MomentumDiscretization
+        self.x_discr = x_discr
         self.p_discrs = p_discrs
         self.units = units
         self.species_mass = species_mass
         self.use_fft = use_fft
 
-        self.x_dim = x_dim
-
         self.p_grid = TensorProductGrid(
                 [p_discr.quad_points_1d for p_discr in self.p_discrs])
 
-        from hedge.models.advection import StrongAdvectionOperator
-        self.x_adv_operators = [
-                StrongAdvectionOperator(v[:self.x_dim], flux_type="upwind")
-                for v in self.v_points]
+        self.advection_op = AdvectionOperator(x_discr.dimensions)
+        self.bound_advection_op= self.advection_op.bind(x_discr)
 
     @property
     def v_points(self):
@@ -102,34 +161,21 @@ class VlasovOperatorBase:
         return make_vector_field("f",
                 range(len(self.p_grid)))
 
-    def op_template(self, forces_T, f=None):
-        from hedge.optemplate import make_vector_field
-        from hedge.tools import make_obj_array
+    def __call__(self, t, fields):
+        f_ary = self.p_grid.to_nd_array(fields)
 
-        def adv_op_template(adv_op, f_of_p):
-            from hedge.optemplate import Field, pair_with_boundary, \
-                    get_flux_operator, make_nabla, InverseMassOperator
-
-            nabla = make_nabla(adv_op.dimensions)
-
-            return (-numpy.dot(adv_op.v, nabla*f_of_p)
-                    + InverseMassOperator()*(
-                        get_flux_operator(adv_op.flux()) * f_of_p
-                        ))
-
-        #if hasattr(p_discr, "diff_function"):
-            #f_p = [p_discr.diff_function(f)]
-        #else:
-
-        def replace_tuple_entry(tp, i, new_value):
-            return tp[:i] + (new_value,) + tp[(i+1):]
-
-        f_ary = self.p_grid.to_nd_array(
-                self.make_densities_placeholder())
+        from hedge.tools import numpy_linear_comb
 
         def diff_function(axis, p_discr):
             result = numpy.zeros(f_ary.shape, dtype=object)
-            remaining_shape = f_ary.shape[:axis] + f_ary.shape[axis+1:]
+            remaining_shape = (
+                    self.p_grid.shape[:axis] 
+                    + self.p_grid.shape[axis+1:])
+
+            #if self.use_fft and hasattr(p_discr, "diff_function"):
+                #result[this_slice] = p_discr.diff_function(
+                        #f_ary[this_slice])
+            #else:
 
             from pytools import indices_in_shape
             for idx_tuple in indices_in_shape(remaining_shape):
@@ -138,12 +184,14 @@ class VlasovOperatorBase:
                         + (slice(None),)
                         + idx_tuple[axis:])
 
-                if self.use_fft and hasattr(p_discr, "diff_function"):
-                    result[this_slice] = p_discr.diff_function(
-                            f_ary[this_slice])
-                else:
-                    result[this_slice] = numpy.dot(
-                            p_discr.diffmat, f_ary[this_slice])
+                for row_idx in range(p_discr.grid_size):
+                    lc = numpy_linear_comb(
+                            zip(p_discr.diffmat[row_idx], f_ary[this_slice]))
+                    dest_idx = (
+                            idx_tuple[:axis] 
+                            + (row_idx,)
+                            + idx_tuple[axis:])
+                    result[dest_idx] = lc
 
             return self.p_grid.to_linear_array(result)
 
@@ -151,14 +199,16 @@ class VlasovOperatorBase:
         f_p = [diff_function(diff_axis, p_discr)
             for diff_axis, p_discr in enumerate(self.p_discrs)]
 
-        return make_obj_array([
-                adv_op_template(adv_op, f_of_p)
-                for adv_op, f_of_p in zip(
-                    self.x_adv_operators,
-                    self.make_densities_placeholder())
-                ]) + sum(
-                        forces_i*f_p_i
-                        for forces_i, f_p_i in zip(forces_T, f_p))
+        from hedge.tools import make_obj_array
+        return (
+                make_obj_array([
+                    self.bound_advection_op(v, t, f_of_p)
+                    for v, f_of_p in zip(self.v_points, fields)
+                    ]) 
+                - sum(
+                    forces_i*f_p_i
+                    for forces_i, f_p_i in zip(self.forces_T(t), f_p))
+                )
 
     def max_eigenvalue(self):
         return max(la.norm(v) for v in self.v_points)
@@ -196,32 +246,12 @@ class VlasovOperatorBase:
 
 
 class PhaseSpaceTransportOperator(VlasovOperatorBase):
-    def __init__(self, x_dim, p_discrs, units, species_mass, forces_func, 
+    def __init__(self, x_discr, p_discrs, units, species_mass, forces_T_func, 
             use_fft=False):
-        VlasovOperatorBase.__init__(self, x_dim, p_discrs, units, species_mass, 
+        VlasovOperatorBase.__init__(self, x_discr, p_discrs, units, species_mass, 
                 use_fft)
-        self.forces_func = forces_func
+        self.forces_T = forces_T_func
 
-    def op_template(self):
-        from hedge.optemplate import Field
-        force_base = Field("force")
-
-        from hedge.tools import make_obj_array
-        forces_T = [make_obj_array([force_base[i][p_axis]
-            for i, p in enumerate(self.p_grid)])
-            for p_axis in range(self.v_dim)]
-
-        return VlasovOperatorBase.op_template(self, forces_T)
-
-    def bind(self, discr):
-        compiled_op_template = discr.compile(self.op_template())
-
-        def rhs(t, densities):
-            return compiled_op_template(
-                    f=densities,
-                    force=self.forces_func(t))
-
-        return rhs
 
 
 
@@ -347,7 +377,7 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
 
 
 
-def add_xv_to_silo(silo, vlasov_op, discr, 
+def add_xp_to_silo(silo, vlasov_op, discr, 
         names_and_quantities):
     from pylo import SiloFile, DB_NODECENT
 
@@ -425,44 +455,6 @@ def find_multirate_split(v_points, levels=2):
     # peel away the velocities before returning rate groups
     return substep_counts, [numpy.array([idx for idx, v in rg], dtype=numpy.intp)
             for rg in rate_groups]
-
-
-
-
-def split_optemplate_for_multirate(state_vector, op_template, 
-        index_groups):
-    class IndexGroupKillerSubstMap:
-        def __init__(self, kill_set):
-            self.kill_set = kill_set
-
-        def __call__(self, expr):
-            if expr in kill_set:
-                return 0
-            else:
-                return None
-
-    # make IndexGroupKillerSubstMap that kill everything
-    # *except* what's in that index group
-    killers = []
-    for i in range(len(index_groups)):
-        kill_set = set()
-        for j in range(len(index_groups)):
-            if i != j:
-                kill_set |= set(index_groups[j])
-
-        killers.append(IndexGroupKillerSubstMap(kill_set))
-
-    from hedge.optemplate import \
-            SubstitutionMapper, \
-            CommutativeConstantFoldingMapper
-
-    return [
-            CommutativeConstantFoldingMapper()(
-                SubstitutionMapper(killer)(
-                    op_template[ig]))
-            for ig in index_groups
-            for killer in killers]
-
 
 
 
