@@ -302,18 +302,27 @@ class PhaseSpaceTransportOperator(VlasovOperatorBase):
 
 
 class VlasovMaxwellOperator(VlasovOperatorBase):
-    def __init__(self, x_dim, p_discrs, maxwell_op, units, species_mass, species_charge, 
+    def __init__(self, x_discr, p_discrs, maxwell_op, units, species_mass, species_charge, 
             use_fft=False):
-        VlasovOperatorBase.__init__(self, x_dim, p_discrs, units, species_mass, 
+        VlasovOperatorBase.__init__(self, x_discr, p_discrs, units, species_mass, 
                 use_fft)
 
         self.maxwell_op = maxwell_op
+        self.bound_maxwell_op = maxwell_op.bind(x_discr)
         self.species_charge = species_charge
         self.charge_mass_ratio = self.species_charge/self.species_mass
 
         from hedge.tools import count_subset
         self.maxwell_field_count = \
                 count_subset(self.maxwell_op.get_eh_subset())
+
+        self.v_subset = [True] * self.v_dim + [False] * (3-self.v_dim)
+        self.e_subset = maxwell_op.get_eh_subset()[:3]
+        self.b_subset = maxwell_op.get_eh_subset()[3:]
+        from hedge.tools import SubsettableCrossProduct
+        self.v_b_cross = SubsettableCrossProduct(
+                self.v_subset, self.b_subset, self.v_subset)
+
 
     def make_maxwell_eh_placeholders(self):
         max_op = self.maxwell_op
@@ -323,29 +332,26 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
         return max_op.split_eh(max_fields)
 
     def j(self, densities):
+        def times(vec, scalar):
+            result = numpy.zeros(vec.shape, dtype=object)
+            for i in range(len(vec)):
+                result[i] = scalar*vec[i]
+            return result
+
         return self.integral_dv([
-                (self.species_charge*v)*f_i
+                times(self.species_charge*v, f_i)
                 for v, f_i in zip(self.v_points, densities)
                 ])
 
     def forces_T(self, densities, max_e, max_h):
         max_op = self.maxwell_op
-        max_e, max_h = self.make_maxwell_eh_placeholders()
 
-        from hedge.optemplate import make_common_subexpression as cse
-        max_b = cse(max_op.mu * max_h)
-
-        v_subset = [True] * self.v_dim + [False] * (3-self.v_dim)
-        e_subset = max_op.get_eh_subset()[:3]
-        b_subset = max_op.get_eh_subset()[3:]
-        from hedge.tools import SubsettableCrossProduct
-        v_b_cross = SubsettableCrossProduct(
-                v_subset, b_subset, v_subset)
+        max_b = max_op.mu * max_h
 
         def pick_subset(tgt_subset, vec_subset, vec):
             from hedge.tools import count_subset
             result = numpy.zeros(count_subset(tgt_subset), 
-                    dtype = object)
+                    dtype=object)
 
             tgt_idx = 0
             for ts, vs, v_i in zip(tgt_subset, vec_subset, vec):
@@ -358,13 +364,13 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
 
             return result
 
-        el_force = pick_subset(v_subset, e_subset,
-                cse(self.species_charge * max_e))
+        el_force = pick_subset(self.v_subset, self.e_subset,
+                self.species_charge * max_e)
 
         from hedge.tools import make_obj_array
-        q_times_b = cse(self.species_charge*max_b)
+        q_times_b = self.species_charge*max_b
         forces = make_obj_array([
-            el_force + v_b_cross(v, q_times_b)
+            el_force + self.v_b_cross(v, q_times_b)
             for v in self.v_points])
 
         return [
@@ -374,38 +380,20 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
                     ])
                 for v_axis in xrange(self.v_dim)]
 
-    def op_template(self):
-        from hedge.tools import join_fields, make_obj_array
-        max_op = self.maxwell_op
-        max_e, max_h = self.make_maxwell_eh_placeholders()
+    def __call__(self, t, q):
+        max_w = q[:self.maxwell_field_count]
+        max_e, max_h = self.maxwell_op.split_eh(max_w)
+        densities = q[self.maxwell_field_count:]
 
-        densities = self.make_densities_placeholder()
-
-        j = self.j(densities)
-
-        # assemble rhs --------------------------------------------------------
-        max_e_rhs, max_h_rhs = max_op.split_eh(
-                max_op.op_template(join_fields(max_e, max_h)))
-        vlasov_rhs = VlasovOperatorBase.op_template(
-                self, self.forces_T(densities, max_e, max_h), densities)
+        from hedge.tools import join_fields
+        max_e_rhs, max_h_rhs = self.maxwell_op.split_eh(
+                self.bound_maxwell_op(t, max_w))
 
         return join_fields(
-                max_e_rhs + j/max_op.epsilon,
+                max_e_rhs + self.j(densities)/self.maxwell_op.epsilon,
                 max_h_rhs,
-                vlasov_rhs)
-
-    def bind(self, discr, op_template=None):
-        if op_template is None:
-            op_template = self.op_template()
-        compiled = discr.compile(op_template)
-
-        def rhs(t, q):
-            max_w = q[:self.maxwell_field_count]
-            densities = q[self.maxwell_field_count:]
-
-            return compiled(w=max_w, f=densities)
-
-        return rhs
+                VlasovOperatorBase.__call__(self, t,
+                    densities, forces_T=self.forces_T(densities, max_e, max_h)))
 
     def split_e_h_densities(self, fields):
         max_w = fields[:self.maxwell_field_count]
