@@ -40,6 +40,7 @@ class VlasovMaxwellCPyUserInterface(pytools.CPyUserInterface):
                 "x_mesh": None,
                 "x_dg_order": 3,
                 "discr_debug_flags": [],
+                "use_fft": False,
 
                 "p_discrs": None,
 

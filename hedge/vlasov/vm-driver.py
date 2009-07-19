@@ -32,7 +32,8 @@ def main():
             x_dim=setup.x_mesh.dimensions, p_discrs=setup.p_discrs,
             maxwell_op=max_op, units=setup.units,
             species_mass=setup.species_mass, 
-            species_charge=setup.species_charge)
+            species_charge=setup.species_charge,
+            use_fft=setup.use_fft)
 
     print "v grids:"
     for i, p_discr in enumerate(vlas_op.p_discrs):
