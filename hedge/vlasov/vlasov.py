@@ -161,43 +161,70 @@ class VlasovOperatorBase:
         return make_vector_field("f",
                 range(len(self.p_grid)))
 
-    def __call__(self, t, fields):
-        f_ary = self.p_grid.to_nd_array(fields)
+    def apply_p1d_function_to_axis(self, axis, func, f_ary):
+        result = numpy.zeros(f_ary.shape, dtype=object)
+        remaining_shape = (
+                self.p_grid.shape[:axis] 
+                + self.p_grid.shape[axis+1:])
 
+        from pytools import indices_in_shape
+        from hedge.tools import numpy_linear_comb, make_obj_array
+
+        for idx_tuple in indices_in_shape(remaining_shape):
+            this_slice = (
+                    idx_tuple[:axis] 
+                    + (slice(None),)
+                    + idx_tuple[axis:])
+
+            result[this_slice] = make_obj_array(func(f_ary[this_slice]))
+
+        return result
+
+    def apply_p1d_matrix_to_axis(self, axis, matrix, f_ary):
+        result = numpy.zeros(f_ary.shape, dtype=object)
+        remaining_shape = (
+                self.p_grid.shape[:axis] 
+                + self.p_grid.shape[axis+1:])
+
+        #if self.use_fft and hasattr(p_discr, "diff_function"):
+            #result[this_slice] = p_discr.diff_function(
+                    #f_ary[this_slice])
+        #else:
+
+        from pytools import indices_in_shape
         from hedge.tools import numpy_linear_comb
 
-        def diff_function(axis, p_discr):
-            result = numpy.zeros(f_ary.shape, dtype=object)
-            remaining_shape = (
-                    self.p_grid.shape[:axis] 
-                    + self.p_grid.shape[axis+1:])
+        for idx_tuple in indices_in_shape(remaining_shape):
+            this_slice = (
+                    idx_tuple[:axis] 
+                    + (slice(None),)
+                    + idx_tuple[axis:])
 
-            #if self.use_fft and hasattr(p_discr, "diff_function"):
-                #result[this_slice] = p_discr.diff_function(
-                        #f_ary[this_slice])
-            #else:
-
-            from pytools import indices_in_shape
-            for idx_tuple in indices_in_shape(remaining_shape):
-                this_slice = (
+            for row_idx in range(self.p_discrs[axis].grid_size):
+                lc = numpy_linear_comb(
+                        zip(matrix[row_idx], f_ary[this_slice]))
+                dest_idx = (
                         idx_tuple[:axis] 
-                        + (slice(None),)
+                        + (row_idx,)
                         + idx_tuple[axis:])
+                result[dest_idx] = lc
 
-                for row_idx in range(p_discr.grid_size):
-                    lc = numpy_linear_comb(
-                            zip(p_discr.diffmat[row_idx], f_ary[this_slice]))
-                    dest_idx = (
-                            idx_tuple[:axis] 
-                            + (row_idx,)
-                            + idx_tuple[axis:])
-                    result[dest_idx] = lc
+        return result
 
-            return self.p_grid.to_linear_array(result)
+    def __call__(self, t, fields, forces_T=None):
+        f_ary = self.p_grid.to_nd_array(fields)
+
+        def nd_diff_function(axis):
+            return self.p_grid.to_linear_array(
+                    self.apply_p1d_matrix_to_axis(
+                        axis, self.p_discrs[axis].diffmat, f_ary))
 
         # list of densities differentiated along each p axis
-        f_p = [diff_function(diff_axis, p_discr)
-            for diff_axis, p_discr in enumerate(self.p_discrs)]
+        f_p = [nd_diff_function(diff_axis)
+            for diff_axis in range(len(self.p_discrs))]
+
+        if forces_T is None:
+            forces_T = self.forces_T(t)
 
         from hedge.tools import make_obj_array
         return (
@@ -207,8 +234,26 @@ class VlasovOperatorBase:
                     ]) 
                 - sum(
                     forces_i*f_p_i
-                    for forces_i, f_p_i in zip(self.forces_T(t), f_p))
+                    for forces_i, f_p_i in zip(forces_T, f_p))
                 )
+
+    def apply_filter(self, densities):
+        f_ary = self.p_grid.to_nd_array(densities)
+
+        for axis, p_discr in enumerate(self.p_discrs):
+            f_ary = self.apply_p1d_matrix_to_axis(
+                    axis, p_discr.filter_matrix, f_ary)
+
+        return self.p_grid.to_linear_array(f_ary)
+
+    def apply_1d_function(self, p_discr_to_func_map, densities):
+        f_ary = self.p_grid.to_nd_array(densities)
+
+        for axis, p_discr in enumerate(self.p_discrs):
+            f_ary = self.apply_p1d_function_to_axis(
+                    axis, p_discr_to_func_map(p_discr), f_ary)
+
+        return self.p_grid.to_linear_array(f_ary)
 
     def max_eigenvalue(self):
         return max(la.norm(v) for v in self.v_points)
