@@ -136,7 +136,7 @@ class VlasovOperatorBase:
                 this_slice = (
                         idx_tuple[:axis] 
                         + (slice(None),)
-                        + idx_tuple[axis+1:])
+                        + idx_tuple[axis:])
 
                 if self.use_fft and hasattr(p_discr, "diff_function"):
                     result[this_slice] = p_discr.diff_function(
@@ -384,6 +384,7 @@ def add_xv_to_silo(silo, vlasov_op, discr,
         else:
             silo.put_quadvar1(name, "xpmesh", q_data, q_data.shape, 
                     DB_NODECENT)
+
 
 
 
