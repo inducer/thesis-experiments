@@ -43,21 +43,34 @@ class TensorProductGrid:
             idx //= shape_i
         return tuple(result)
 
+    def to_nd_array(self, linear_array):
+        result = numpy.zeros(self.shape, dtype=object)
+        for idx_tuple, entry in zip(self.iterindex(), linear_array):
+            result[idx_tuple] = entry
 
+        return result
+
+    def to_linear_array(self, nd_array):
+        result = numpy.zeros(len(self), dtype=object)
+        for lin_index, idx_tuple in enumerate(self.iterindex()):
+            result[lin_index] = nd_array[idx_tuple]
+
+        return result
 
 
 class VlasovOperatorBase:
-    def __init__(self, x_dim, v_dim, units, species_mass, *args, **kwargs):
+    def __init__(self, x_dim, p_discrs, units, species_mass,
+            use_fft=False):
         from p_discr import MomentumDiscretization
-        self.p_discr = MomentumDiscretization(*args, **kwargs)
+        self.p_discrs = p_discrs
         self.units = units
         self.species_mass = species_mass
+        self.use_fft = use_fft
 
         self.x_dim = x_dim
-        self.v_dim = v_dim
 
         self.p_grid = TensorProductGrid(
-                v_dim*[self.p_discr.quad_points_1d])
+                [p_discr.quad_points_1d for p_discr in self.p_discrs])
 
         from hedge.models.advection import StrongAdvectionOperator
         self.x_adv_operators = [
@@ -69,29 +82,29 @@ class VlasovOperatorBase:
         for p in self.p_grid:
             yield self.units.v_from_p(self.species_mass, p)
 
+    @property
+    def v_dim(self):
+        return len(self.p_discrs)
+
     @memoize_method
     def quad_weights(self):
         from pytools import product
         pg = self.p_grid
-        qw = self.p_discr.quad_weights_1d
 
-        return numpy.array(
-                [product(qw[j] for j in i) for i in pg.iterindex()], 
-                dtype=numpy.float64)
+        return numpy.array([
+            product(p_discr.quad_weights_1d[j] 
+                for j, p_discr in zip(idx_tuple, self.p_discrs)) 
+            for idx_tuple in pg.iterindex()], dtype=numpy.float64)
 
     @memoize_method
-    def make_densities_placeholder(self, base_number=0):
+    def make_densities_placeholder(self):
         from hedge.optemplate import make_vector_field
         return make_vector_field("f",
-                range(base_number, 
-                    base_number+len(self.p_grid)))
+                range(len(self.p_grid)))
 
     def op_template(self, forces_T, f=None):
         from hedge.optemplate import make_vector_field
         from hedge.tools import make_obj_array
-
-        if f is None:
-            f = self.make_densities_placeholder()
 
         def adv_op_template(adv_op, f_of_p):
             from hedge.optemplate import Field, pair_with_boundary, \
@@ -104,35 +117,45 @@ class VlasovOperatorBase:
                         get_flux_operator(adv_op.flux()) * f_of_p
                         ))
 
-        p_discr = self.p_discr
-
         #if hasattr(p_discr, "diff_function"):
             #f_p = [p_discr.diff_function(f)]
         #else:
 
-        p_grid = self.p_grid
-
         def replace_tuple_entry(tp, i, new_value):
             return tp[:i] + (new_value,) + tp[(i+1):]
 
-        f_p = [make_obj_array([
-            sum(
-                p_discr.diffmat[
-                    p_grid.tuple_from_linear(i)[diff_dir],
-                    j]
-                *f[p_grid.linear_from_tuple(
-                    replace_tuple_entry(
-                        p_grid.tuple_from_linear(i),
-                        diff_dir, j))]
-                for j in range(p_discr.grid_size))
-            for i in range(len(p_grid))
-            ])
-            for diff_dir in range(self.v_dim)]
+        f_ary = self.p_grid.to_nd_array(
+                self.make_densities_placeholder())
+
+        def diff_function(axis, p_discr):
+            result = numpy.zeros(f_ary.shape, dtype=object)
+            remaining_shape = f_ary.shape[:axis] + f_ary.shape[axis+1:]
+
+            from pytools import indices_in_shape
+            for idx_tuple in indices_in_shape(remaining_shape):
+                this_slice = (
+                        idx_tuple[:axis] 
+                        + (slice(None),)
+                        + idx_tuple[axis+1:])
+
+                if self.use_fft and hasattr(p_discr, "diff_function"):
+                    result[this_slice] = p_discr.diff_function(
+                            f_ary[this_slice])
+                else:
+                    result[this_slice] = numpy.dot(
+                            p_discr.diffmat, f_ary[this_slice])
+
+            return self.p_grid.to_linear_array(result)
+
+        # list of densities differentiated along each p axis
+        f_p = [diff_function(diff_axis, p_discr)
+            for diff_axis, p_discr in enumerate(self.p_discrs)]
 
         return make_obj_array([
-                adv_op_template(adv_op, f[i])
-                for i, adv_op in enumerate(
-                    self.x_adv_operators)
+                adv_op_template(adv_op, f_of_p)
+                for adv_op, f_of_p in zip(
+                    self.x_adv_operators,
+                    self.make_densities_placeholder())
                 ]) + sum(
                         forces_i*f_p_i
                         for forces_i, f_p_i in zip(forces_T, f_p))
@@ -140,11 +163,15 @@ class VlasovOperatorBase:
     def max_eigenvalue(self):
         return max(la.norm(v) for v in self.v_points)
 
-
     def integral_dp(self, values):
         return sum(qw_i*val_i
                 for qw_i, val_i in 
                 zip(self.quad_weights(), values))
+
+    def integral_p_squared_dp(self,values):
+        return sum(qw_i*val_i*numpy.dot(p_i, p_i)
+                for qw_i, val_i, p_i in 
+                zip(self.quad_weights(), values, self.p_grid))
 
     @memoize_method
     def int_dv_quad_weights(self):
@@ -168,11 +195,11 @@ class VlasovOperatorBase:
 
 
 
-class VlasovOperator(VlasovOperatorBase):
-    def __init__(self, x_dim, v_dim, units, species_mass, forces_func, 
-            *args, **kwargs):
-        VlasovOperatorBase.__init__(self, x_dim, v_dim, units, species_mass, 
-                *args, **kwargs)
+class PhaseSpaceTransportOperator(VlasovOperatorBase):
+    def __init__(self, x_dim, p_discrs, units, species_mass, forces_func, 
+            use_fft=False):
+        VlasovOperatorBase.__init__(self, x_dim, p_discrs, units, species_mass, 
+                use_fft)
         self.forces_func = forces_func
 
     def op_template(self):
@@ -200,12 +227,14 @@ class VlasovOperator(VlasovOperatorBase):
 
 
 class VlasovMaxwellOperator(VlasovOperatorBase):
-    def __init__(self, x_dim, v_dim, maxwell_op, units, species_mass, species_charge, 
-            *args, **kwargs):
-        VlasovOperatorBase.__init__(self, x_dim, v_dim, units, species_mass, *args, **kwargs)
+    def __init__(self, x_dim, p_discrs, maxwell_op, units, species_mass, species_charge, 
+            use_fft=False):
+        VlasovOperatorBase.__init__(self, x_dim, p_discrs, units, species_mass, 
+                use_fft)
 
         self.maxwell_op = maxwell_op
         self.species_charge = species_charge
+        self.charge_mass_ratio = self.species_charge/self.species_mass
 
         from hedge.tools import count_subset
         self.maxwell_field_count = \
@@ -322,7 +351,10 @@ def add_xv_to_silo(silo, vlasov_op, discr,
         names_and_quantities):
     from pylo import SiloFile, DB_NODECENT
 
-    scheme_dtype = vlasov_op.p_discr.diffmat.dtype
+    from pytools import common_dtype
+    scheme_dtype = common_dtype(
+            p_discr.diffmat.dtype
+            for p_discr in vlasov_op.p_discrs)
     is_complex = scheme_dtype.kind == "c"
 
     silo.put_quadmesh("xpmesh", [

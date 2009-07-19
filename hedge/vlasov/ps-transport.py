@@ -32,8 +32,8 @@ def main():
     def forces(t):
         return force_const
 
-    from vlasov import VlasovOperator
-    op = VlasovOperator(x_dim=1, v_dim=2, units=units, 
+    from vlasov import PhaseSpaceTransportOperator
+    op = PhaseSpaceTransportOperator(x_dim=1, v_dim=2, units=units, 
             species_mass=1, forces_func=forces,
             grid_size=16, filter_type="exponential",
             hard_scale=5, bounded_fraction=0.8,

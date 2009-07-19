@@ -13,9 +13,17 @@ def default_get_eh(discr, vlasov_op, densities):
 
 class VlasovMaxwellCPyUserInterface(pytools.CPyUserInterface):
     def __init__(self):
+        from math import sqrt, exp, pi, sin, cos
+        from p_discr import MomentumDiscretization
         constants = {
                 "numpy": numpy,
                 "la": la,
+                "sqrt": sqrt,
+                "exp": exp,
+                "pi": pi,
+                "sin": sin,
+                "cos": cos,
+                "PDiscr": MomentumDiscretization,
                 }
 
         variables = {
@@ -33,9 +41,7 @@ class VlasovMaxwellCPyUserInterface(pytools.CPyUserInterface):
                 "x_dg_order": 3,
                 "discr_debug_flags": [],
 
-                "v_dim": None,
-                "p_grid_size": None,
-                "p_discr_args": None,
+                "p_discrs": None,
 
                 "species_mass": None,
                 "species_charge": None,
@@ -57,9 +63,7 @@ class VlasovMaxwellCPyUserInterface(pytools.CPyUserInterface):
             setup.x_mesh = make_uniform_1d_mesh(-pi, pi, 
                     setup.x_element_count, periodic=True)
 
-        must_specify = ["species_mass", "species_charge",
-                "v_dim", "p_grid_size", "final_time",
-                "p_discr_args"]
+        must_specify = ["species_mass", "species_charge", "p_discrs"]
 
         for name in must_specify:
             if getattr(setup, name) is None:

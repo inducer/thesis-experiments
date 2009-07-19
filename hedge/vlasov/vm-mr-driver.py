@@ -32,11 +32,15 @@ def main():
 
     from vlasov import VlasovMaxwellOperator
     vlas_op = VlasovMaxwellOperator(
-            x_dim=setup.x_mesh.dimensions, v_dim=setup.v_dim,
+            x_dim=setup.x_mesh.dimensions, p_discrs=setup.p_discrs,
             maxwell_op=max_op, units=setup.units,
             species_mass=setup.species_mass, 
-            species_charge=setup.species_charge,
-            grid_size=setup.p_grid_size, **setup.p_discr_args)
+            species_charge=setup.species_charge)
+
+    print "v grids:"
+    for i, p_discr in enumerate(vlas_op.p_discrs):
+        print i, [setup.units.v_from_p(vlas_op.species_mass, p)
+            for p in p_discr.quad_points_1d]
 
     from hedge.tools import make_obj_array, join_fields
 
@@ -60,7 +64,7 @@ def main():
 
     # em fields and fastest densities propagate at about the
     # speed of light, so stick them in the same rate group
-    fields = ([join_fields(
+    fields = make_obj_array([join_fields(
             get_max_fields(), densities_by_rate_group[0])]
             + densities_by_rate_group[1:])
 
@@ -103,6 +107,17 @@ def main():
     discr.add_instrumentation(logmgr)
 
     logmgr.add_watches(["step.max", "t_sim.max", "t_step.max"])
+
+    from hedge.log import add_em_quantities
+    from log import VlasovMaxwellFGetter, add_density_quantities
+
+    def get_fields():
+        return join_fields(*fields)[joint_mr_to_field_map]
+
+    field_getter = VlasovMaxwellFGetter(
+            discr, max_op, vlas_op, get_fields)
+    add_em_quantities(logmgr, max_op, field_getter)
+    add_density_quantities(logmgr, vlas_op, field_getter)
 
     # timestep loop -----------------------------------------------------------
     def bind(op_template):

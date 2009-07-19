@@ -29,14 +29,15 @@ def main():
 
     from vlasov import VlasovMaxwellOperator
     vlas_op = VlasovMaxwellOperator(
-            x_dim=setup.x_mesh.dimensions, v_dim=setup.v_dim,
+            x_dim=setup.x_mesh.dimensions, p_discrs=setup.p_discrs,
             maxwell_op=max_op, units=setup.units,
             species_mass=setup.species_mass, 
-            species_charge=setup.species_charge,
-            grid_size=setup.p_grid_size, **setup.p_discr_args)
+            species_charge=setup.species_charge)
 
-    print "v grid:", [setup.units.v_from_p(vlas_op.species_mass, p)
-            for p in vlas_op.p_discr.quad_points_1d]
+    print "v grids:"
+    for i, p_discr in enumerate(vlas_op.p_discrs):
+        print i, [setup.units.v_from_p(vlas_op.species_mass, p)
+            for p in p_discr.quad_points_1d]
 
     densities = setup.get_densities(discr, vlas_op)
 
@@ -71,6 +72,12 @@ def main():
     stepper.add_instrumentation(logmgr)
 
     logmgr.add_watches(["step.max", "t_sim.max", "t_step.max"])
+
+    from hedge.log import add_em_quantities
+    from log import VlasovMaxwellFGetter, add_density_quantities
+    field_getter = VlasovMaxwellFGetter(discr, max_op, vlas_op, lambda: fields)
+    add_em_quantities(logmgr, max_op, field_getter)
+    add_density_quantities(logmgr, vlas_op, field_getter)
 
     # timestep loop -----------------------------------------------------------
     rhs = vlas_op.bind(discr)
