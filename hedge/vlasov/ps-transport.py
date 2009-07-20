@@ -41,6 +41,7 @@ def main():
                     filter_type="exponential",
                     hard_scale=0.6, 
                     bounded_fraction=0.8,
+                    use_fft=False,
                     filter_parameters=dict(preservation_ratio=0.3))],
             units=units, species_mass=1, forces_T_func=forces_T)
 
@@ -62,7 +63,7 @@ def main():
     # timestep setup ----------------------------------------------------------
     stepper = RK4TimeStepper()
 
-    dt = discr.dt_factor(op.max_eigenvalue()) * 0.075
+    dt = discr.dt_factor(op.max_eigenvalue()) * 0.5
     nsteps = int(10/dt)
 
     print "%d elements, dt=%g, nsteps=%d" % (
@@ -102,6 +103,10 @@ def main():
                         ])
 
             densities = stepper(densities, t, dt, op)
+
+            if step % 20 == 0:
+                densities = vlasov_op.apply_filter(densities)
+
     finally:
         logmgr.close()
         discr.close()
