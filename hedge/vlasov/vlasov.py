@@ -237,7 +237,7 @@ class VlasovOperatorBase:
                     for forces_i, f_p_i in zip(forces_T, f_p))
                 )
 
-    def apply_filter(self, densities):
+    def apply_filter_matrix(self, densities):
         f_ary = self.p_grid.to_nd_array(densities)
 
         for axis, p_discr in enumerate(self.p_discrs):
@@ -254,6 +254,11 @@ class VlasovOperatorBase:
                     axis, p_discr_to_func_map(p_discr), f_ary)
 
         return self.p_grid.to_linear_array(f_ary)
+
+    def apply_filter(self, densities):
+        return self.apply_1d_function(
+                lambda p_discr: p_discr.apply_filter,
+                densities)
 
     def max_eigenvalue(self):
         return max(la.norm(v) for v in self.v_points)
@@ -395,6 +400,15 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
                 VlasovOperatorBase.__call__(self, t,
                     densities, forces_T=self.forces_T(densities, max_e, max_h)))
 
+    def apply_filter(self, q):
+        max_w = q[:self.maxwell_field_count]
+        densities = q[self.maxwell_field_count:]
+
+        from hedge.tools import join_fields
+        return join_fields(
+                max_w,
+                VlasovOperatorBase.apply_filter(self, densities))
+
     def split_e_h_densities(self, fields):
         max_w = fields[:self.maxwell_field_count]
         e, h = self.maxwell_op.split_eh(max_w)
@@ -510,9 +524,8 @@ def test_mrab_split():
     from p_discr import MomentumDiscretization
     pd = MomentumDiscretization(
             grid_size=16, filter_type="exponential",
-            hard_scale=5, bounded_fraction=0.8,
-            filter_parameters=dict(eta_cutoff=0.3))
-    print best_tworate_split(pd.quad_points_1d)
+            hard_scale=5, bounded_fraction=0.8)
+    print best_multirate_split(pd.quad_points_1d)
 
 
 if __name__ == "__main__":
