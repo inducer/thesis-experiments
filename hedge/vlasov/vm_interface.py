@@ -51,6 +51,8 @@ class VlasovMaxwellCPyUserInterface(pytools.CPyUserInterface):
                 "get_eh": default_get_eh,
 
                 "vis_interval": 40,
+
+                "filter_interval": 0,
                 }
 
         doc = {}

@@ -109,10 +109,13 @@ def main():
                     vis.add_data(visf, [
                         ("e", real_part(e)),
                         ("h", real_part(h)),
-                        ("j", real_part(vlasov_op.j(fields))),
+                        ("j", real_part(vlasov_op.j(densities))),
                         ], time=t, step=step)
 
             fields = stepper(fields, t, dt, vlasov_op)
+
+            if setup.filter_interval and step % setup.filter_interval == 0:
+                fields = vlasov_op.apply_filter(fields)
     finally:
         logmgr.close()
         discr.close()
