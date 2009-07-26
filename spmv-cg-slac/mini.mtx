@@ -1,0 +1,4 @@
+%%MatrixMarket matrix coordinate integer general
+%A 5 point Laplacian stencil in 2 dimensions
+1000 1000 1
+5 2 4
