@@ -1,5 +1,4 @@
 from __future__ import division
-from __future__ import with_statement
 from pytools import memoize_method
 import pycuda.driver as drv
 import pycuda.gpuarray as gpuarray
@@ -109,19 +108,19 @@ def get_py_adjacency(csr_mat, is_symmetric):
 
 class PacketedSpMV:
     def __init__(self, mat, is_symmetric, dtype):
+        from pycuda.tools import DeviceData
+        devdata = DeviceData()
+
         # all row indices in the data structure generation code are
         # "unpermuted" unless otherwise specified
         self.dtype = numpy.dtype(dtype)
         self.index_dtype = numpy.int32
         self.packed_index_dtype = numpy.uint32
-        self.threads_per_packet = 256
+        self.threads_per_packet = devdata.max_threads
 
         h, w = self.shape = mat.shape
         if h != w:
             raise ValueError("only square matrices are supported")
-
-        from pycuda.tools import DeviceData
-        devdata = DeviceData()
 
         self.rows_per_packet = (devdata.shared_memory - 100) \
                 // (2*self.dtype.itemsize)
@@ -135,25 +134,42 @@ class PacketedSpMV:
 
         from pymetis import part_graph
         py_csr = get_py_adjacency(csr_mat, is_symmetric)
-        cut_count, dof_to_packet_nr = part_graph(self.block_count, py_csr)
+
+        while True:
+            cut_count, dof_to_packet_nr = part_graph(self.block_count, py_csr)
+
+            # build packet_nr_to_dofs
+            packet_nr_to_dofs = {}
+            for i, packet_nr in enumerate(dof_to_packet_nr):
+                try:
+                    dof_packet = packet_nr_to_dofs[packet_nr]
+                except KeyError:
+                    packet_nr_to_dofs[packet_nr] = dof_packet = []
+
+                dof_packet.append(i)
+
+            packet_nr_to_dofs = [packet_nr_to_dofs.get(i)
+                    for i in range(len(packet_nr_to_dofs))]
+
+            too_big = False
+            for packet_dofs in packet_nr_to_dofs:
+                if len(packet_dofs) >= self.rows_per_packet:
+                    too_big = True
+                    break
+
+            if too_big:
+                old_block_count = self.block_count
+                self.block_count = int(2+1.05*self.block_count)
+                print ("Metis produced a big block at block count "
+                        "%d--retrying with %d" 
+                        % (old_block_count, self.block_count))
+                continue
+
+            break
+
+        assert len(packet_nr_to_dofs) == self.block_count
+
         del py_csr
-
-        # build packet_nr_to_dofs -----------------------------------------------
-        packet_nr_to_dofs = {}
-        for i, packet_nr in enumerate(dof_to_packet_nr):
-            try:
-                dof_packet = packet_nr_to_dofs[packet_nr]
-            except KeyError:
-                packet_nr_to_dofs[packet_nr] = dof_packet = []
-
-            dof_packet.append(i)
-
-        packet_nr_to_dofs = [packet_nr_to_dofs.get(i, [])
-                for i in range(len(packet_nr_to_dofs))]
-
-        for packet_dofs in packet_nr_to_dofs:
-            if len(packet_dofs) >= self.rows_per_packet:
-                raise RuntimeError("Metis produced an excessively big block")
 
         # permutations, base rows ---------------------------------------------
         new2old_fetch_indices, \
@@ -162,12 +178,12 @@ class PacketedSpMV:
                         packet_nr_to_dofs)
 
         # find local row cost and remaining_coo -------------------------------
-        local_row_costs, self.remaining_coo = \
+        local_row_costs, remaining_coo = \
                 self.find_local_row_costs_and_remaining_coo(
                         csr_mat, dof_to_packet_nr, old2new_fetch_indices)
         local_nnz = numpy.sum(local_row_costs)
 
-        assert self.remaining_coo.nnz == csr_mat.nnz - local_nnz
+        assert remaining_coo.nnz == csr_mat.nnz - local_nnz
 
         # find thread assignment for each block -------------------------------
         thread_count = len(packet_nr_to_dofs)*self.threads_per_packet
@@ -186,6 +202,10 @@ class PacketedSpMV:
                 new2old_fetch_indices)
         self.old2new_fetch_indices = gpuarray.to_gpu(
                 old2new_fetch_indices)
+
+        from coordinate import CoordinateSpMV
+        self.remaining_coo_gpu = CoordinateSpMV(
+                remaining_coo, dtype)
 
     def find_simple_index_stuff(self, packet_nr_to_dofs):
         new2old_fetch_indices = numpy.zeros(
@@ -271,44 +291,6 @@ class PacketedSpMV:
 
         return thread_assignments, thread_costs
 
-    @memoize_method
-    def get_kernel(self):
-        from pycuda.tools import dtype_to_ctype
-
-        mod = SourceModule(
-                PKT_KERNEL_TEMPLATE % {
-                    "value_type": dtype_to_ctype(self.dtype),
-                    "index_type": dtype_to_ctype(self.index_dtype),
-                    "packed_index_type": dtype_to_ctype(self.packed_index_dtype),
-                    "threads_per_packet": self.threads_per_packet,
-                    "rows_per_packet": self.rows_per_packet,
-                    }, no_extern_c=True)
-        func = mod.get_function("spmv_pkt_kernel")
-        func.prepare("PPPPPPP", (self.threads_per_packet, 1, 1))
-        return func
-
-    def permute(self, x):
-        return gpuarray.take(x, self.new2old_fetch_indices)
-
-    def unpermute(self, x):
-        return gpuarray.take(x, self.old2new_fetch_indices)
-
-    def __call__(self, x, y=None):
-        if y is None:
-            y = gpuarray.zeros(self.shape[0], dtype=self.dtype)
-
-        self.get_kernel().prepared_call(
-                (self.block_count, 1),
-                self.packet_base_rows.gpudata,
-                self.thread_starts.gpudata,
-                self.thread_ends.gpudata,
-                self.index_array.gpudata,
-                self.data_array.gpudata,
-                x.gpudata,
-                y.gpudata)
-
-        return y
-
     def build_gpu_data_structure(self, packet_nr_to_dofs, max_thread_costs,
             old2new_fetch_indices, csr_mat, thread_count, thread_assignments,
             local_row_costs):
@@ -368,3 +350,45 @@ class PacketedSpMV:
         self.thread_ends = gpuarray.to_gpu(thread_ends)
         self.index_array = gpuarray.to_gpu(index_array)
         self.data_array = gpuarray.to_gpu(data_array)
+
+    # execution ---------------------------------------------------------------
+    @memoize_method
+    def get_kernel(self):
+        from pycuda.tools import dtype_to_ctype
+
+        mod = SourceModule(
+                PKT_KERNEL_TEMPLATE % {
+                    "value_type": dtype_to_ctype(self.dtype),
+                    "index_type": dtype_to_ctype(self.index_dtype),
+                    "packed_index_type": dtype_to_ctype(self.packed_index_dtype),
+                    "threads_per_packet": self.threads_per_packet,
+                    "rows_per_packet": self.rows_per_packet,
+                    }, no_extern_c=True)
+        func = mod.get_function("spmv_pkt_kernel")
+        func.prepare("PPPPPPP", (self.threads_per_packet, 1, 1))
+        return func
+
+    def permute(self, x):
+        return gpuarray.take(x, self.new2old_fetch_indices)
+
+    def unpermute(self, x):
+        return gpuarray.take(x, self.old2new_fetch_indices)
+
+    def __call__(self, x, y=None):
+        if y is None:
+            y = gpuarray.zeros(self.shape[0], dtype=self.dtype)
+
+        self.get_kernel().prepared_call(
+                (self.block_count, 1),
+                self.packet_base_rows.gpudata,
+                self.thread_starts.gpudata,
+                self.thread_ends.gpudata,
+                self.index_array.gpudata,
+                self.data_array.gpudata,
+                x.gpudata,
+                y.gpudata)
+
+        self.remaining_coo_gpu(x, y)
+
+        return y
+
