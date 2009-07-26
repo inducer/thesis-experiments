@@ -288,10 +288,10 @@ class PacketedSpMV:
         return func
 
     def permute(self, x):
-        return gpuarray.take(x, self.old2new_fetch_indices)
+        return gpuarray.take(x, self.new2old_fetch_indices)
 
     def unpermute(self, x):
-        return gpuarray.take(x, self.new2old_fetch_indices)
+        return gpuarray.take(x, self.old2new_fetch_indices)
 
     def __call__(self, x, y=None):
         if y is None:
