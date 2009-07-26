@@ -90,7 +90,6 @@ spmv_pkt_kernel(const index_type *row_ptr,
 def get_py_adjacency(csr_mat, is_symmetric):
     if not is_symmetric:
         # make sure adjacency graph is undirected
-        print "symmetrizing..."
         csr_mat = csr_mat + csr_mat.T
 
     py_csr = []
@@ -135,9 +134,7 @@ class PacketedSpMV:
         csr_mat = csr_matrix(mat, dtype=self.dtype)
 
         from pymetis import part_graph
-        print "adj"
         py_csr = get_py_adjacency(csr_mat, is_symmetric)
-        print "part"
         cut_count, dof_to_packet_nr = part_graph(self.block_count, py_csr)
         del py_csr
 
@@ -159,15 +156,15 @@ class PacketedSpMV:
                 raise RuntimeError("Metis produced an excessively big block")
 
         # permutations, base rows ---------------------------------------------
-        permute_fetch_indices, \
-                unpermute_fetch_indices, \
+        new2old_fetch_indices, \
+                old2new_fetch_indices, \
                 packet_base_rows = self.find_simple_index_stuff(
                         packet_nr_to_dofs)
 
         # find local row cost and remaining_coo -------------------------------
         local_row_costs, self.remaining_coo = \
                 self.find_local_row_costs_and_remaining_coo(
-                        csr_mat, dof_to_packet_nr, permute_fetch_indices)
+                        csr_mat, dof_to_packet_nr, old2new_fetch_indices)
         local_nnz = numpy.sum(local_row_costs)
 
         assert self.remaining_coo.nnz == csr_mat.nnz - local_nnz
@@ -181,19 +178,19 @@ class PacketedSpMV:
 
         # build data structure ------------------------------------------------
         self.build_gpu_data_structure(packet_nr_to_dofs, max_thread_costs,
-            permute_fetch_indices, csr_mat, thread_count, thread_assignments,
+            old2new_fetch_indices, csr_mat, thread_count, thread_assignments,
             local_row_costs)
 
         self.packet_base_rows = gpuarray.to_gpu(packet_base_rows)
-        self.permute_fetch_indices = gpuarray.to_gpu(
-                permute_fetch_indices)
-        self.unpermute_fetch_indices = gpuarray.to_gpu(
-                unpermute_fetch_indices)
+        self.new2old_fetch_indices = gpuarray.to_gpu(
+                new2old_fetch_indices)
+        self.old2new_fetch_indices = gpuarray.to_gpu(
+                old2new_fetch_indices)
 
     def find_simple_index_stuff(self, packet_nr_to_dofs):
-        permute_fetch_indices = numpy.zeros(
+        new2old_fetch_indices = numpy.zeros(
                 self.shape[0], dtype=self.index_dtype)
-        unpermute_fetch_indices = numpy.zeros(
+        old2new_fetch_indices = numpy.zeros(
                 self.shape[0], dtype=self.index_dtype)
 
         packet_base_rows = numpy.zeros(
@@ -206,20 +203,20 @@ class PacketedSpMV:
             row_end = row_start + len(packet)
 
             pkt_indices = numpy.array(packet, dtype=self.index_dtype)
-            unpermute_fetch_indices[row_start:row_end] = \
+            new2old_fetch_indices[row_start:row_end] = \
                     pkt_indices
-            permute_fetch_indices[pkt_indices] = \
+            old2new_fetch_indices[pkt_indices] = \
                     numpy.arange(row_start, row_end, dtype=self.index_dtype)
 
             row_start += len(packet)
 
         packet_base_rows[self.block_count] = row_start
 
-        return (permute_fetch_indices, unpermute_fetch_indices,
+        return (new2old_fetch_indices, old2new_fetch_indices,
                 packet_base_rows)
 
     def find_local_row_costs_and_remaining_coo(self, csr_mat, dof_to_packet_nr,
-            permute_fetch_indices):
+            old2new_fetch_indices):
         h, w = self.shape
         local_row_costs = numpy.zeros(h, dtype=numpy.uint32)
         rem_coo_values = []
@@ -235,8 +232,8 @@ class PacketedSpMV:
                     local_row_costs[i] += 1
                 else:
                     rem_coo_values.append(csr_mat.data[idx])
-                    rem_coo_i.append(permute_fetch_indices[i])
-                    rem_coo_j.append(permute_fetch_indices[j])
+                    rem_coo_i.append(old2new_fetch_indices[i])
+                    rem_coo_j.append(old2new_fetch_indices[j])
 
         from scipy.sparse import coo_matrix
         remaining_coo = coo_matrix(
@@ -291,10 +288,10 @@ class PacketedSpMV:
         return func
 
     def permute(self, x):
-        return gpuarray.take(x, self.permute_fetch_indices)
+        return gpuarray.take(x, self.old2new_fetch_indices)
 
     def unpermute(self, x):
-        return gpuarray.take(x, self.unpermute_fetch_indices)
+        return gpuarray.take(x, self.new2old_fetch_indices)
 
     def __call__(self, x, y=None):
         if y is None:
@@ -313,7 +310,7 @@ class PacketedSpMV:
         return y
 
     def build_gpu_data_structure(self, packet_nr_to_dofs, max_thread_costs,
-            permute_fetch_indices, csr_mat, thread_count, thread_assignments,
+            old2new_fetch_indices, csr_mat, thread_count, thread_assignments,
             local_row_costs):
         # these arrays will likely be too long, but that's ok
         index_array = numpy.zeros(
@@ -337,7 +334,7 @@ class PacketedSpMV:
                 thread_starts[base_thread_nr+thread_offset] = thread_write_idx
 
                 for row_nr in thread_assignments[base_thread_nr+thread_offset]:
-                    perm_row_nr = permute_fetch_indices[row_nr]
+                    perm_row_nr = old2new_fetch_indices[row_nr]
                     rel_row_nr = perm_row_nr - base_dof_nr
                     assert 0 <= rel_row_nr < len(packet_dofs)
 
@@ -346,7 +343,7 @@ class PacketedSpMV:
                     for idx in range(csr_mat.indptr[row_nr], csr_mat.indptr[row_nr+1]):
                         col_nr = csr_mat.indices[idx]
 
-                        perm_col_nr = permute_fetch_indices[col_nr]
+                        perm_col_nr = old2new_fetch_indices[col_nr]
                         rel_col_nr = perm_col_nr - base_dof_nr
 
                         if 0 <= rel_col_nr < len(packet_dofs):
