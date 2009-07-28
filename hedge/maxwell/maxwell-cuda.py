@@ -244,7 +244,6 @@ def main():
 
     if options.profile:
         from cProfile import Profile
-        from lsprofcalltree import KCacheGrind
         prof = Profile()
 
         rhs(0, boxed_fields[0]) # keep init traffic out of profile
@@ -253,6 +252,7 @@ def main():
             prof.runcall(timestep_loop)
             fields = boxed_fields[0]
         finally:
+            from lsprofcalltree import KCacheGrind
             kg = KCacheGrind(prof)
             import sys
             from hedge.tools import get_rank

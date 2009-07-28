@@ -86,26 +86,6 @@ spmv_pkt_kernel(const index_type *row_ptr,
 
 
 
-def get_py_adjacency(csr_mat, is_symmetric):
-    if not is_symmetric:
-        # make sure adjacency graph is undirected
-        csr_mat = csr_mat + csr_mat.T
-
-    py_csr = []
-    h, w = csr_mat.shape
-
-    for i in xrange(h):
-        py_csr.append(
-                list(csr_mat.indices[
-                    numpy.arange(
-                        csr_mat.indptr[i], 
-                        csr_mat.indptr[i+1])]))
-
-    return py_csr
-
-
-
-
 class PacketedSpMV:
     def __init__(self, mat, is_symmetric, dtype):
         from pycuda.tools import DeviceData
@@ -133,10 +113,13 @@ class PacketedSpMV:
         csr_mat = csr_matrix(mat, dtype=self.dtype)
 
         from pymetis import part_graph
-        py_csr = get_py_adjacency(csr_mat, is_symmetric)
+        if not is_symmetric:
+            # make sure adjacency graph is undirected
+            adj_mat = csr_mat + csr_mat.T
 
         while True:
-            cut_count, dof_to_packet_nr = part_graph(self.block_count, py_csr)
+            cut_count, dof_to_packet_nr = part_graph(self.block_count, 
+                    xadj=adj_mat.indptr, adjncy=adj_mat.indices)
 
             # build packet_nr_to_dofs
             packet_nr_to_dofs = {}
@@ -169,8 +152,6 @@ class PacketedSpMV:
 
         assert len(packet_nr_to_dofs) == self.block_count
 
-        del py_csr
-
         # permutations, base rows ---------------------------------------------
         new2old_fetch_indices, \
                 old2new_fetch_indices, \
@@ -193,6 +174,7 @@ class PacketedSpMV:
         max_thread_costs = numpy.max(thread_costs)
 
         # build data structure ------------------------------------------------
+        print "data structure"
         self.build_gpu_data_structure(packet_nr_to_dofs, max_thread_costs,
             old2new_fetch_indices, csr_mat, thread_count, thread_assignments,
             local_row_costs)
@@ -206,6 +188,7 @@ class PacketedSpMV:
         from coordinate import CoordinateSpMV
         self.remaining_coo_gpu = CoordinateSpMV(
                 remaining_coo, dtype)
+        print "done"
 
     def find_simple_index_stuff(self, packet_nr_to_dofs):
         new2old_fetch_indices = numpy.zeros(
@@ -238,20 +221,23 @@ class PacketedSpMV:
     def find_local_row_costs_and_remaining_coo(self, csr_mat, dof_to_packet_nr,
             old2new_fetch_indices):
         h, w = self.shape
-        local_row_costs = numpy.zeros(h, dtype=numpy.uint32)
+        local_row_costs = [0]*h
         rem_coo_values = []
         rem_coo_i = []
         rem_coo_j = []
 
+        iptr = csr_mat.indptr
+        indices = csr_mat.indices
+        data = csr_mat.data
+
         for i in xrange(h):
-            row = {}
-            for idx in range(csr_mat.indptr[i], csr_mat.indptr[i+1]):
-                j = csr_mat.indices[idx]
+            for idx in xrange(iptr[i], iptr[i+1]):
+                j = indices[idx]
 
                 if dof_to_packet_nr[i] == dof_to_packet_nr[j]:
                     local_row_costs[i] += 1
                 else:
-                    rem_coo_values.append(csr_mat.data[idx])
+                    rem_coo_values.append(data[idx])
                     rem_coo_i.append(old2new_fetch_indices[i])
                     rem_coo_j.append(old2new_fetch_indices[j])
 
@@ -376,7 +362,8 @@ class PacketedSpMV:
 
     def __call__(self, x, y=None):
         if y is None:
-            y = gpuarray.zeros(self.shape[0], dtype=self.dtype)
+            y = gpuarray.zeros(self.shape[0], dtype=self.dtype,
+                    allocator=x.allocator)
 
         self.get_kernel().prepared_call(
                 (self.block_count, 1),
