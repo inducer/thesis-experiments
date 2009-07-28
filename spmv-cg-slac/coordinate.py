@@ -158,6 +158,26 @@ class CoordinateSpMV:
         self.data_gpu = gpuarray.to_gpu(coo_mat.data)
         self.nnz = coo_mat.nnz
 
+        from pycuda.tools import DeviceData
+        dev = drv.Context.get_device()
+        devdata = DeviceData()
+        max_threads = (devdata.warps_per_mp*devdata.warp_size*
+                dev.multiprocessor_count)
+        max_blocks = 4*max_threads // self.block_size
+        warps_per_block = self.block_size // dev.warp_size
+
+        def divide_into(x, y):
+            return (x+y-1)//y
+
+        num_units  = self.nnz // dev.warp_size
+        num_warps  = min(num_units, warps_per_block * max_blocks)
+        self.num_blocks = divide_into(num_warps, warps_per_block)
+        num_iters  = divide_into(num_units, num_warps)
+
+        self.interval_size = dev.warp_size * num_iters
+        self.tail = num_units * dev.warp_size
+
+
     @memoize_method
     def get_flat_kernel(self):
         from pycuda.tools import dtype_to_ctype
@@ -192,31 +212,16 @@ class CoordinateSpMV:
 
     def __call__(self, x, y=None):
         if y is None:
-            y = gpuarray.zeros(self.shape[0], dtype=self.dtype)
+            y = gpuarray.zeros(self.shape[0], dtype=self.dtype,
+                    allocator=x.allocator)
 
         if self.nnz == 0:
             return y
 
-        dev = drv.Context.get_device()
-        max_threads = dev.max_threads_per_block
-        max_blocks = 4*max_threads // self.block_size
-        warps_per_block = self.block_size // dev.warp_size
-
-        def divide_into(x, y):
-            return (x+y-1)//y
-
-        num_units  = self.nnz // dev.warp_size
-        num_warps  = min(num_units, warps_per_block * max_blocks)
-        num_blocks = divide_into(num_warps, warps_per_block)
-        num_iters  = divide_into(num_units, num_warps)
-
-        interval_size = dev.warp_size * num_iters
-        tail = num_units * dev.warp_size
-
         flat_func, x_texref = self.get_flat_kernel()
         x.bind_to_texref_ext(x_texref, allow_double_hack=True)
-        flat_func.prepared_call((num_blocks, 1),
-                tail, interval_size, 
+        flat_func.prepared_call((self.num_blocks, 1),
+                self.tail, self.interval_size, 
                 self.row_gpu.gpudata, 
                 self.col_gpu.gpudata, 
                 self.data_gpu.gpudata, 
@@ -224,10 +229,10 @@ class CoordinateSpMV:
 
         self.get_serial_kernel().prepared_call(
                 (1, 1),
-                self.nnz - tail, 
-                self.row_gpu[tail:].gpudata, 
-                self.col_gpu[tail:].gpudata,
-                self.data_gpu[tail:].gpudata,
+                self.nnz - self.tail, 
+                self.row_gpu[self.tail:].gpudata, 
+                self.col_gpu[self.tail:].gpudata,
+                self.data_gpu[self.tail:].gpudata,
                 x.gpudata, y.gpudata)
 
         return y
