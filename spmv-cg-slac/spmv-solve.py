@@ -8,6 +8,7 @@ from pycuda.compiler import SourceModule
 import numpy
 import numpy.linalg as la
 import pyublas
+import pyximport; pyximport.install()
 
 
 
@@ -301,7 +302,7 @@ class GPUCGStateContainer:
 
 
 
-def solve_pkt_with_cg(pkt_spmv, b, x=None, tol=1e-7, max_iterations=None,
+def solve_pkt_with_cg(pkt_spmv, b, precon=None, x=None, tol=1e-7, max_iterations=None,
         debug=False, pagelocked_allocator=None):
     if x is None:
         x = gpuarray.zeros(pkt_spmv.shape[0], dtype=pkt_spmv.dtype,
@@ -319,7 +320,7 @@ def solve_pkt_with_cg(pkt_spmv, b, x=None, tol=1e-7, max_iterations=None,
         if pagelocked_allocator is None:
             pagelocked_allocator = drv.pagelocked_empty
 
-        cg = GPUCGStateContainer(pkt_spmv, 
+        cg = GPUCGStateContainer(pkt_spmv, precon,
                 pagelocked_allocator=pagelocked_allocator)
 
     cg.reset(pkt_spmv.permute(b), x)
@@ -350,17 +351,27 @@ def main_cg():
             help="Specify that the input matrix is already symmetric")
     options, args = parser.parse_args()
 
-    from scipy.io import mmread
-    mat = mmread(args[0])
-
-    print "building..."
-    from packeted import PacketedSpMV
-    spmv = PacketedSpMV(mat, options.is_symmetric, numpy.float32)
-    rhs = numpy.random.rand(spmv.shape[0]).astype(spmv.dtype)
-
     from pycuda.tools import DeviceMemoryPool, PageLockedMemoryPool
     dev_pool = DeviceMemoryPool()
     pagelocked_pool = PageLockedMemoryPool()
+
+    from scipy.io import mmread
+    csr_mat = mmread(args[0]).tocsr().astype(numpy.float32)
+
+    inv_mat_diag = 1/csr_mat.diagonal()
+    from hedge.iterative import DiagonalPreconditioner
+
+    print "building..."
+    from packeted import PacketedSpMV
+    spmv = PacketedSpMV(csr_mat, options.is_symmetric, csr_mat.dtype)
+    rhs = numpy.random.rand(spmv.shape[0]).astype(spmv.dtype)
+
+    if True:
+        precon = DiagonalPreconditioner(
+                spmv.permute(gpuarray.to_gpu(
+                    inv_mat_diag, allocator=dev_pool.allocate)))
+    else:
+        precon = None
 
     print "start solve"
     for i in range(4):
@@ -370,7 +381,7 @@ def main_cg():
 
         rhs_gpu = gpuarray.to_gpu(rhs, dev_pool.allocate)
         res_gpu, it_count, res_count = \
-                solve_pkt_with_cg(spmv, rhs_gpu, 
+                solve_pkt_with_cg(spmv, rhs_gpu, precon,
                         tol=1e-7 if spmv.dtype == numpy.float64 else 5e-5,
                         pagelocked_allocator=pagelocked_pool.allocate)
         res = res_gpu.get()
@@ -379,13 +390,16 @@ def main_cg():
         stop.synchronize()
 
         elapsed = stop.time_since(start)*1e-3
-        est_flops = (mat.nnz*2*(it_count+res_count)
-            + mat.shape[0]*(2+2+2+2+2)*it_count)
+        est_flops = (csr_mat.nnz*2*(it_count+res_count)
+            + csr_mat.shape[0]*(2+2+2+2+2)*it_count)
+
+        if precon is not None:
+            est_flops += csr_mat.shape[0] * it_count
                     
-        print "residual norm: %g" % (la.norm(mat*res - rhs)/la.norm(rhs))
+        print "residual norm: %g" % (la.norm(csr_mat*res - rhs)/la.norm(rhs))
         print ("size: %d, elapsed: %g s, %d it, %d residual, it/second: %g, "
                 "%g gflops/s" % (
-                    mat.shape[0],
+                    csr_mat.shape[0],
                     elapsed, it_count, res_count, it_count/elapsed,
                     est_flops/elapsed/1e9))
 

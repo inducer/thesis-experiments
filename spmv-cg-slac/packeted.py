@@ -116,11 +116,15 @@ class PacketedSpMV:
         if not is_symmetric:
             # make sure adjacency graph is undirected
             adj_mat = csr_mat + csr_mat.T
+        else:
+            adj_mat = csr_mat
 
         while True:
+            print "metis"
             cut_count, dof_to_packet_nr = part_graph(self.block_count, 
                     xadj=adj_mat.indptr, adjncy=adj_mat.indices)
 
+            print "postproc metis"
             # build packet_nr_to_dofs
             packet_nr_to_dofs = {}
             for i, packet_nr in enumerate(dof_to_packet_nr):
@@ -153,12 +157,14 @@ class PacketedSpMV:
         assert len(packet_nr_to_dofs) == self.block_count
 
         # permutations, base rows ---------------------------------------------
+        print "indexy stuff"
         new2old_fetch_indices, \
                 old2new_fetch_indices, \
                 packet_base_rows = self.find_simple_index_stuff(
                         packet_nr_to_dofs)
 
         # find local row cost and remaining_coo -------------------------------
+        print "row costs"
         local_row_costs, remaining_coo = \
                 self.find_local_row_costs_and_remaining_coo(
                         csr_mat, dof_to_packet_nr, old2new_fetch_indices)
@@ -167,6 +173,7 @@ class PacketedSpMV:
         assert remaining_coo.nnz == csr_mat.nnz - local_nnz
 
         # find thread assignment for each block -------------------------------
+        print "thread assignment"
         thread_count = len(packet_nr_to_dofs)*self.threads_per_packet
         thread_assignments, thread_costs = self.find_thread_assignment(
                 packet_nr_to_dofs, local_row_costs, thread_count)
@@ -175,7 +182,8 @@ class PacketedSpMV:
 
         # build data structure ------------------------------------------------
         print "data structure"
-        self.build_gpu_data_structure(packet_nr_to_dofs, max_thread_costs,
+        from pkt_build import build_pkt_data_structure
+        build_pkt_data_structure(self, packet_nr_to_dofs, max_thread_costs,
             old2new_fetch_indices, csr_mat, thread_count, thread_assignments,
             local_row_costs)
 
@@ -281,61 +289,14 @@ class PacketedSpMV:
             old2new_fetch_indices, csr_mat, thread_count, thread_assignments,
             local_row_costs):
         # these arrays will likely be too long, but that's ok
-        index_array = numpy.zeros(
-                max_thread_costs*thread_count, dtype=self.packed_index_dtype)
-        data_array = numpy.zeros(
-                max_thread_costs*thread_count, dtype=self.dtype)
-        thread_starts = numpy.zeros(
-                thread_count, dtype=self.index_dtype)
-        thread_ends = numpy.zeros(
-                thread_count, dtype=self.index_dtype)
 
-        packet_start = 0
-        base_dof_nr = 0
-        for packet_nr, packet_dofs in enumerate(packet_nr_to_dofs):
-            base_thread_nr = packet_nr*self.threads_per_packet
-            max_packet_items = 0
+        from pkt_build import build_pkt_structure
+        build_pkt_structure(self, packet_nr_to_dofs, thread_assignments,
+                thread_starts, thread_ends, index_array, data_array)
 
-            for thread_offset in range(self.threads_per_packet):
-                thread_write_idx = packet_start+thread_offset
-                thread_start = packet_start+thread_offset
-                thread_starts[base_thread_nr+thread_offset] = thread_write_idx
 
-                for row_nr in thread_assignments[base_thread_nr+thread_offset]:
-                    perm_row_nr = old2new_fetch_indices[row_nr]
-                    rel_row_nr = perm_row_nr - base_dof_nr
-                    assert 0 <= rel_row_nr < len(packet_dofs)
-
-                    row_entries = 0
-
-                    for idx in range(csr_mat.indptr[row_nr], csr_mat.indptr[row_nr+1]):
-                        col_nr = csr_mat.indices[idx]
-
-                        perm_col_nr = old2new_fetch_indices[col_nr]
-                        rel_col_nr = perm_col_nr - base_dof_nr
-
-                        if 0 <= rel_col_nr < len(packet_dofs):
-                            index_array[thread_write_idx] = (rel_row_nr << 16) + rel_col_nr
-                            data_array[thread_write_idx] = csr_mat.data[idx]
-                            thread_write_idx += self.threads_per_packet
-                            row_entries += 1
-
-                    assert row_entries == local_row_costs[row_nr]
-
-                thread_ends[base_thread_nr+thread_offset] = thread_write_idx
-
-                thread_items = (thread_write_idx - thread_start)//self.threads_per_packet
-                max_packet_items = max(
-                        max_packet_items, thread_items)
-
-            base_dof_nr += len(packet_dofs)
-            packet_start += max_packet_items*self.threads_per_packet
 
         # copy data to the gpu ------------------------------------------------
-        self.thread_starts = gpuarray.to_gpu(thread_starts)
-        self.thread_ends = gpuarray.to_gpu(thread_ends)
-        self.index_array = gpuarray.to_gpu(index_array)
-        self.data_array = gpuarray.to_gpu(data_array)
 
     # execution ---------------------------------------------------------------
     @memoize_method
