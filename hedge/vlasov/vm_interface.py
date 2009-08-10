@@ -40,6 +40,7 @@ class VlasovMaxwellCPyUserInterface(pytools.CPyUserInterface):
                 "x_mesh": None,
                 "x_dg_order": 3,
                 "discr_debug_flags": [],
+                "use_fft": False,
 
                 "p_discrs": None,
 
@@ -50,6 +51,8 @@ class VlasovMaxwellCPyUserInterface(pytools.CPyUserInterface):
                 "get_eh": default_get_eh,
 
                 "vis_interval": 40,
+
+                "filter_interval": 0,
                 }
 
         doc = {}

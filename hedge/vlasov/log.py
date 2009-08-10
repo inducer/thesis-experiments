@@ -1,3 +1,4 @@
+from __future__ import division
 from pytools.log import LogQuantity
 from hedge.log import EMFieldGetter
 
@@ -72,7 +73,7 @@ class DensityKineticEnergy(LogQuantity):
         rel_energy_vs_x = vlasov_op.integral_p_squared_dp(f_over_2m)
 
         from hedge.tools import ptwise_dot
-        energy_density = 1/2*(ptwise_dot(1, 1, rel_energy_vs_x,  rel_energy_vs_x))
+        energy_density = 1/2*(rel_energy_vs_x*rel_energy_vs_x)
         return self.fields.discr.integral(energy_density)
 
 

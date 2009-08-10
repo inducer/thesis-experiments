@@ -28,21 +28,23 @@ def main():
             flux_type=1, dimensions=setup.x_mesh.dimensions)
 
     from vlasov import VlasovMaxwellOperator
-    vlas_op = VlasovMaxwellOperator(
-            x_dim=setup.x_mesh.dimensions, p_discrs=setup.p_discrs,
+    vlasov_op = VlasovMaxwellOperator(
+            x_discr=discr,
+            p_discrs=setup.p_discrs,
             maxwell_op=max_op, units=setup.units,
             species_mass=setup.species_mass, 
-            species_charge=setup.species_charge)
+            species_charge=setup.species_charge,
+            use_fft=setup.use_fft)
 
     print "v grids:"
-    for i, p_discr in enumerate(vlas_op.p_discrs):
-        print i, [setup.units.v_from_p(vlas_op.species_mass, p)
+    for i, p_discr in enumerate(vlasov_op.p_discrs):
+        print i, [setup.units.v_from_p(vlasov_op.species_mass, p)
             for p in p_discr.quad_points_1d]
 
-    densities = setup.get_densities(discr, vlas_op)
+    densities = setup.get_densities(discr, vlasov_op)
 
     def get_max_fields():
-        e, h = setup.get_eh(discr, vlas_op, densities)
+        e, h = setup.get_eh(discr, vlasov_op, densities)
         return max_op.assemble_eh(e=e, h=h, discr=discr)
 
     from hedge.tools import make_obj_array, join_fields
@@ -51,7 +53,7 @@ def main():
     # timestep setup ----------------------------------------------------------
     stepper = RK4TimeStepper()
 
-    dt = discr.dt_factor(vlas_op.max_eigenvalue()) * setup.dt_scale
+    dt = discr.dt_factor(vlasov_op.max_eigenvalue()) * setup.dt_scale
     nsteps = int(setup.final_time/dt)
 
     print "%d elements, dt=%g, nsteps=%d" % (
@@ -75,20 +77,11 @@ def main():
 
     from hedge.log import add_em_quantities
     from log import VlasovMaxwellFGetter, add_density_quantities
-    field_getter = VlasovMaxwellFGetter(discr, max_op, vlas_op, lambda: fields)
+    field_getter = VlasovMaxwellFGetter(discr, max_op, vlasov_op, lambda: fields)
     add_em_quantities(logmgr, max_op, field_getter)
-    add_density_quantities(logmgr, vlas_op, field_getter)
+    add_density_quantities(logmgr, vlasov_op, field_getter)
 
     # timestep loop -----------------------------------------------------------
-    rhs = vlas_op.bind(discr)
-    j_op = vlas_op.bind(discr, vlas_op.j(
-        vlas_op.make_densities_placeholder()))
-
-    forces_ops = [vlas_op.bind(discr, force_op)
-            for force_op in vlas_op.forces_T(
-                vlas_op.make_densities_placeholder(),
-                *vlas_op.make_maxwell_eh_placeholders())]
-
     def real_part(fld):
         from hedge.tools import with_object_array_or_scalar
         return with_object_array_or_scalar(lambda x: x.real, fld)
@@ -101,24 +94,28 @@ def main():
 
             if step % setup.vis_interval == 0:
                 with vis.make_file("vmax-%04d" % step) as visf:
-                    e, h, densities = vlas_op.split_e_h_densities(fields)
-                    from vlasov import add_xv_to_silo
+                    e, h, densities = vlasov_op.split_e_h_densities(fields)
+                    from vlasov import add_xp_to_silo
 
                     AXES = ["x", "y", "z"]
 
-                    add_xv_to_silo(visf, vlas_op, discr, [
+                    add_xp_to_silo(visf, vlasov_op, discr, [
                         ("f", densities),
                         ] + [
-                        ("forces"+AXES[i], force_op(t, fields))
-                        for i, force_op in enumerate(forces_ops)
+                        ("forces"+AXES[i], axis_forces)
+                        for i, axis_forces in enumerate(
+                            vlasov_op.forces_T(densities, e, h))
                         ])
                     vis.add_data(visf, [
                         ("e", real_part(e)),
                         ("h", real_part(h)),
-                        ("j", real_part(j_op(t, fields))),
+                        ("j", real_part(vlasov_op.j(densities))),
                         ], time=t, step=step)
 
-            fields = stepper(fields, t, dt, rhs)
+            fields = stepper(fields, t, dt, vlasov_op)
+
+            if setup.filter_interval and step % setup.filter_interval == 0:
+                fields = vlasov_op.apply_filter(fields)
     finally:
         logmgr.close()
         discr.close()

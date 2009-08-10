@@ -29,16 +29,24 @@ final_time = 100
 multirate_dt_scale = 0.1
 vis_interval = 5
 
-x_element_count = 10
+x_element_count = 60
+x_dg_order = 4
 _p_discr_args = dict(
         filter_type="exponential",
-        hard_scale=0.6, 
+        hard_scale=1, 
         bounded_fraction=0.8,
-        filter_parameters=dict(preservation_ratio=0.3))
+        filter_parameters=dict(
+            preservation_ratio=0.7,
+            truncation_value=1e-8,
+            ),
+        use_fft=False, # for filter--not working yet
+        )
 
 p_discrs = [
-        PDiscr(4, **_p_discr_args),
-        PDiscr(4, **_p_discr_args),
+        PDiscr(45, **_p_discr_args),
+        PDiscr(8, **_p_discr_args),
         ]
 
 _v_dim = len(p_discrs)
+
+filter_interval = 1

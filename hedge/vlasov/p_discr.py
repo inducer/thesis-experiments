@@ -67,5 +67,7 @@ class MomentumDiscretization:
 
         self.basis.make_spectral_filter_matrix_for_nodes()
         self.filter_matrix = self.basis.spectral_filter_matrix_for_nodes
+        #self.filter_matrix = dot(dot(self.basis.vandermonde, self.basis.spectral_filter_matrix_for_modes), 
+        #                         self.basis.vandermonde_inverse)
         self.diffmat = dot(self.filter_matrix,self.diffmat)
         #self.filter(nodal_evaluations)
