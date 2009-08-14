@@ -315,7 +315,7 @@ def solve_pkt_with_cg(pkt_spmv, b, precon=None, x=None, tol=1e-7, max_iterations
             return gpuarray.dot(a,b).get()
 
         from hedge.iterative import CGStateContainer
-        cg = CGStateContainer(pkt_spmv, dot=inner)
+        cg = CGStateContainer(pkt_spmv, precon, dot=inner)
     else:
         if pagelocked_allocator is None:
             pagelocked_allocator = drv.pagelocked_empty
@@ -382,7 +382,7 @@ def main_cg():
         rhs_gpu = gpuarray.to_gpu(rhs, dev_pool.allocate)
         res_gpu, it_count, res_count = \
                 solve_pkt_with_cg(spmv, rhs_gpu, precon,
-                        tol=1e-7 if spmv.dtype == numpy.float64 else 5e-5,
+                        tol=1e-12 if spmv.dtype == numpy.float64 else 1e-4,
                         pagelocked_allocator=pagelocked_pool.allocate)
         res = res_gpu.get()
 
