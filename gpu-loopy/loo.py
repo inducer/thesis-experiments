@@ -571,7 +571,8 @@ class VariableIndexExpressionCollector(CombineMapper):
 
 
 
-def generate_single_vector_kernel_prefetch_choices(kernel, ivec):
+def generate_single_vector_kernel_prefetch_choices(kernel, ivec,
+        force_prefetch):
     from pytools import flatten
     index_exprs = set(flatten(
         VariableIndexExpressionCollector(ivec)(expression)
@@ -591,8 +592,16 @@ def generate_single_vector_kernel_prefetch_choices(kernel, ivec):
                 for dim in involved_dims
                 if not isinstance(dim.tag, (THREAD_IDX_TAG, BLOCK_IDX_TAG))]
 
-        from pytools import generate_nonnegative_integer_tuples_below as gnitt
-        for flags in gnitt(2, len(uncertain_dims)):
+        if force_prefetch == True:
+            choices = [[True]*len(uncertain_dims)]
+        elif force_prefetch == False:
+            choices = [[True]*len(uncertain_dims)]
+        else:
+            assert force_prefetch is None
+            from pytools import generate_nonnegative_integer_tuples_below as gnitt
+            choices = gnitt(2, len(uncertain_dims))
+
+        for flags in choices:
             my_prefetch_dims = prefetch_dims + [
                     udim for udim, flag in zip(uncertain_dims, flags)
                     if flag]
@@ -646,10 +655,12 @@ def optimize_prefetch(kernel):
 
 
 
-def generate_kernel_prefetch_choices(kernel, ivecs):
+def generate_kernel_prefetch_choices(kernel, ivecs, prefetch_hints):
     if ivecs:
-        for knl in generate_single_vector_kernel_prefetch_choices(kernel, ivecs[0]):
-            for subknl in generate_kernel_prefetch_choices(knl, ivecs[1:]):
+        for knl in generate_single_vector_kernel_prefetch_choices(
+                kernel, ivecs[0], prefetch_hints.get(ivecs[0])):
+            for subknl in generate_kernel_prefetch_choices(
+                    knl, ivecs[1:], prefetch_hints):
                 yield subknl
     else:
         yield kernel
@@ -657,14 +668,27 @@ def generate_kernel_prefetch_choices(kernel, ivecs):
 
 
 
-def generate_all_prefetching_kernels(kernel):
+def generate_all_prefetching_kernels(kernel, prefetch_hints):
     kernel = kernel.copy(prefetch={})
 
     from pytools import generate_nonnegative_integer_tuples_below as gnitt
     ivecs = kernel.input_vectors()
-    for flags in gnitt(2, len(ivecs)):
+
+    certain_yes_ivecs = []
+    uncertain_ivecs = []
+
+    for iv in ivecs:
+        hint = prefetch_hints.get(iv)
+        if hint == True:
+            certain_yes_ivecs.append(iv)
+        elif hint is None:
+            uncertain_ivecs.append(iv)
+
+    for flags in gnitt(2, len(uncertain_ivecs)):
         for knl in generate_kernel_prefetch_choices(kernel,
-                [ivec for flag, ivec in zip(flags, ivecs) if flag]):
+                certain_yes_ivecs
+                + [ivec for flag, ivec in zip(flags, uncertain_ivecs) if flag],
+                prefetch_hints):
             yield optimize_prefetch(knl)
 
 
@@ -1202,7 +1226,8 @@ class CompiledKernel:
 
 
 # driver ----------------------------------------------------------------------
-def generate_all_kernels(orig_kernel, min_threads=None, min_blocks=None):
+def generate_all_kernels(orig_kernel, min_threads=None, min_blocks=None,
+        prefetch_hints={}):
     for knl in generate_dim_assignments(orig_kernel):
         if min_threads is not None and knl.thread_count() < min_threads:
             continue
@@ -1215,7 +1240,8 @@ def generate_all_kernels(orig_kernel, min_threads=None, min_blocks=None):
             print "-------------------------------------------------------"
             raw_input()
         else:
-            for pf_knl in generate_all_prefetching_kernels(knl):
+            for pf_knl in generate_all_prefetching_kernels(knl,
+                    prefetch_hints):
                 for sch_knl in generate_loop_schedules(pf_knl):
                     yield insert_register_prefetches(sch_knl)
 
@@ -1318,6 +1344,7 @@ def main_elwise_scaled_matrix_mul():
     gen_kwargs = {
             "min_threads": 128,
             "min_blocks": 32,
+            "prefetch_hints": {"g": False, "m":True},
             }
 
     if True and HAVE_CUDA:
