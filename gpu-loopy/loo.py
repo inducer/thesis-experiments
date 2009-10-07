@@ -13,6 +13,8 @@ from pymbolic.mapper import CombineMapper
 # TODO: More freedom for data types of input and output vectors
 # TODO: Try different kernels
 # TODO: Non-multiple loop splits
+# TODO: Fake "constant" parameter preservation
+# TODO: Play with multi-d data layout (optionally?)
 
 
 
@@ -414,7 +416,7 @@ def generate_dim_assignments(kernel, idx=0,
                 break
 
             if dim.length % my_block_length != 0:
-                break
+                continue
 
             new_length = dim.length//my_block_length
             
@@ -508,7 +510,8 @@ def generate_prefetch_sizes(kernel, ivec, iexpr, prefetch_dims):
                 prefetch_length = dim.length
 
             if dim.length % prefetch_length != 0:
-                break
+                prefetch_length *= 2
+                continue
 
             outer_length = dim.length//prefetch_length
             if outer_length > 1:
@@ -990,7 +993,7 @@ def generate_code(kernel):
                             pf_assignment))
 
             new_block = Block([
-                    Comment("prefetch dimensions: " + ", ".join(
+                    Comment(("prefetch %s dim: " % pf.input_vector) + ", ".join(
                         "%s[%d]" % (pfdim.name, pfdim.length) for pfdim in pf.dims)),
                     Comment("  ... direct-thread prefetch dims: " + ", ".join(
                         pfdim.name for pfdim in thread_pf_dims)),
@@ -1056,14 +1059,17 @@ def generate_code(kernel):
 
 # debugging -------------------------------------------------------------------
 def print_kernel_info(knl):
-    print "PREFETCH", total_prefetch_size(knl)
-    for pf in knl.prefetch.itervalues():
-        print "   %s[%s]: %s" % (pf.input_vector, pf.index_expr, pf.dims)
-    print
-    print "Scheduling: ---------------------"
-    for sched_item in knl.schedule:
-        print sched_item
-    print
+    if hasattr(knl, "prefetch"):
+        print "PREFETCH", total_prefetch_size(knl)
+        for pf in knl.prefetch.itervalues():
+            print "   %s[%s]: %s" % (pf.input_vector, pf.index_expr, pf.dims)
+        print
+
+    if hasattr(knl, "schedule"):
+        print "Scheduling: ---------------------"
+        for sched_item in knl.schedule:
+            print sched_item
+        print
 
     for ld in knl.dims:
         print ld
@@ -1124,15 +1130,9 @@ def generate_all_kernels(orig_kernel, min_threads=None, min_blocks=None):
         if min_blocks is not None and knl.block_count() < min_blocks:
             continue
 
-        if False:
-            for d in knl.dims:
-                print d
-            print "-------------------------------------------------------"
-            raw_input()
-        else:
-            for pf_knl in generate_all_prefetching_kernels(knl):
-                for sch_knl in generate_loop_schedules(pf_knl):
-                    yield sch_knl
+        for pf_knl in generate_all_prefetching_kernels(knl):
+            for sch_knl in generate_loop_schedules(pf_knl):
+                yield sch_knl
 
 
 
@@ -1142,13 +1142,15 @@ def drive_timing_run(kernel_generator, launch, flop_count=None):
     for kernel in kernel_generator:
 
         compiled = CompiledKernel(kernel)
-        elapsed = compiled.time_run(launch)
 
         print "-----------------------------------------------"
         print "SOLUTION #%d" % soln_count
         print "-----------------------------------------------"
         print compiled.code
         print "-----------------------------------------------"
+
+        elapsed = compiled.time_run(launch)
+
         print "time: %f" % elapsed
         if flop_count is not None:
             print "gflops/s: %f (#%d)" % (
@@ -1261,5 +1263,61 @@ def main_volume_d_dx():
 
 
 
+def main_hex_volume_d_dx():
+    d = 3
+    N = 4
+    Np1 = N+1
+    Np = Np1**d
+
+    Np_padded = 128
+    K = 20000
+    from pymbolic import var
+
+    D, Du, u, g, i0, i1, i2, j, k = [var(s) for s in [
+        "D", "Du", "u", "g", "i0", "i1", "i2", "j", "k"]]
+
+    axis_indices = [i0,i1,i2]
+
+    ker = make_loop_kernel([
+        LoopDimension("k", K),
+        LoopDimension("j", Np1),
+        ] + [LoopDimension(ai.name, Np1) for ai in axis_indices], 
+        [ 
+            (Du[k*Np_padded + sum(axis_indices[i_dim]*Np1**i_dim for i_dim in range(d))],
+                D[j*Np1+i0] * u[k*Np_padded + sum(
+                    (axis_indices[i_dim] if i_dim != d_out else j)*Np1**i_dim 
+                    for i_dim in range(d))]
+                ) 
+            for d_out in [0]
+            ]
+        )
+
+    gen_kwargs = {
+            "min_threads": 64,
+            "min_blocks": 32,
+            }
+
+    if True and HAVE_CUDA:
+        if HAVE_CUDA:
+            u = curandom.rand((Np_padded, K))
+            #g = curandom.rand((Np*3, K))
+            D = curandom.rand((Np1, Np1))
+            Du = curandom.rand((Np_padded, K))
+
+        def launcher(grid, kernel, texref_lookup):
+            u.bind_to_texref_ext(texref_lookup["u"])
+            #g.bind_to_texref_ext(texref_lookup["g"])
+            D.bind_to_texref_ext(texref_lookup["D"])
+            kernel.prepared_call(grid, Du.gpudata)
+
+        drive_timing_run(
+                generate_all_kernels(ker, **gen_kwargs),
+                launcher, 2*(Np1**3)*K)
+    else:
+        show_kernel_codes(generate_all_kernels(ker, **gen_kwargs))
+
+
+
+
 if __name__ == "__main__":
-    main_volume_d_dx()
+    main_hex_volume_d_dx()
