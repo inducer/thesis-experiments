@@ -20,7 +20,7 @@ from pymbolic.mapper import CombineMapper
 
 
 
-SMEM_BYTES = 16384
+SMEM_BYTES = 16384 - 256 # allow for parameter space
 MAX_THREADS_PER_BLOCK = 512
 
 try:
@@ -548,7 +548,7 @@ def generate_prefetch_sizes(kernel, ivec, iexpr, prefetch_dims):
 
 
 
-class IndexExpressionCollector(CombineMapper):
+class VariableIndexExpressionCollector(CombineMapper):
     def __init__(self, tgt_vector_name):
         self.tgt_vector_name = tgt_vector_name
 
@@ -574,10 +574,11 @@ class IndexExpressionCollector(CombineMapper):
 
 
 
-def generate_single_vector_kernel_prefetch_choices(kernel, ivec):
+def generate_single_vector_kernel_prefetch_choices(kernel, ivec,
+        force_prefetch):
     from pytools import flatten
     index_exprs = set(flatten(
-        IndexExpressionCollector(ivec)(expression)
+        VariableIndexExpressionCollector(ivec)(expression)
         for lvalue, expression in kernel.instructions
         ))
 
@@ -594,8 +595,16 @@ def generate_single_vector_kernel_prefetch_choices(kernel, ivec):
                 for dim in involved_dims
                 if not isinstance(dim.tag, (THREAD_IDX_TAG, BLOCK_IDX_TAG))]
 
-        from pytools import generate_nonnegative_integer_tuples_below as gnitt
-        for flags in gnitt(2, len(uncertain_dims)):
+        if force_prefetch == True:
+            choices = [[True]*len(uncertain_dims)]
+        elif force_prefetch == False:
+            choices = [[True]*len(uncertain_dims)]
+        else:
+            assert force_prefetch is None
+            from pytools import generate_nonnegative_integer_tuples_below as gnitt
+            choices = gnitt(2, len(uncertain_dims))
+
+        for flags in choices:
             my_prefetch_dims = prefetch_dims + [
                     udim for udim, flag in zip(uncertain_dims, flags)
                     if flag]
@@ -625,7 +634,7 @@ def optimize_prefetch(kernel):
         pfdims = non_thread_pf_dims+thread_pf_dims[::-1]
         dim_storage_lengths = [pfdim.length for pfdim in pfdims]
 
-        if thread_pf_dims[0].tag.axis == 0:
+        if thread_pf_dims and thread_pf_dims[0].tag.axis == 0:
             tx_dim = thread_pf_dims[0]
 
             # see if we can afford the smem expense in avoiding bank conflicts
@@ -649,10 +658,12 @@ def optimize_prefetch(kernel):
 
 
 
-def generate_kernel_prefetch_choices(kernel, ivecs):
+def generate_kernel_prefetch_choices(kernel, ivecs, prefetch_hints):
     if ivecs:
-        for knl in generate_single_vector_kernel_prefetch_choices(kernel, ivecs[0]):
-            for subknl in generate_kernel_prefetch_choices(knl, ivecs[1:]):
+        for knl in generate_single_vector_kernel_prefetch_choices(
+                kernel, ivecs[0], prefetch_hints.get(ivecs[0])):
+            for subknl in generate_kernel_prefetch_choices(
+                    knl, ivecs[1:], prefetch_hints):
                 yield subknl
     else:
         yield kernel
@@ -660,14 +671,27 @@ def generate_kernel_prefetch_choices(kernel, ivecs):
 
 
 
-def generate_all_prefetching_kernels(kernel):
+def generate_all_prefetching_kernels(kernel, prefetch_hints):
     kernel = kernel.copy(prefetch={})
 
     from pytools import generate_nonnegative_integer_tuples_below as gnitt
     ivecs = kernel.input_vectors()
-    for flags in gnitt(2, len(ivecs)):
+
+    certain_yes_ivecs = []
+    uncertain_ivecs = []
+
+    for iv in ivecs:
+        hint = prefetch_hints.get(iv)
+        if hint == True:
+            certain_yes_ivecs.append(iv)
+        elif hint is None:
+            uncertain_ivecs.append(iv)
+
+    for flags in gnitt(2, len(uncertain_ivecs)):
         for knl in generate_kernel_prefetch_choices(kernel,
-                [ivec for flag, ivec in zip(flags, ivecs) if flag]):
+                certain_yes_ivecs
+                + [ivec for flag, ivec in zip(flags, uncertain_ivecs) if flag],
+                prefetch_hints):
             yield optimize_prefetch(knl)
 
 
@@ -776,6 +800,73 @@ def generate_loop_schedules(kernel):
 
 
 
+# register prefetches ---------------------------------------------------------
+class AllIndexExpressionCollector(CombineMapper):
+    def combine(self, values):
+        from pytools import flatten
+        return set(flatten(values))
+
+    def map_constant(self, expr):
+        return set()
+
+    def map_algebraic_leaf(self, expr):
+        return set()
+
+    def map_subscript(self, expr):
+        from pymbolic.primitives import Variable
+        assert isinstance(expr.aggregate, Variable)
+
+        return set([expr])
+
+
+
+
+def insert_register_prefetches(kernel):
+    reg_pf = {}
+
+    total_loop_count = len(kernel.all_indices())
+    known_vars = set()
+
+    unused_index_exprs = set()
+    for tgt, expr in kernel.instructions:
+        unused_index_exprs |= AllIndexExpressionCollector()(expr)
+    unused_index_exprs = [
+            (iexpr, set(v.name for v in DependencyMapper()(iexpr.index)))
+            for iexpr in unused_index_exprs]
+
+    schedule = kernel.schedule[:]
+
+    sched_index = 0
+    loop_count = 0
+    while sched_index < len(schedule):
+        sched_item = schedule[sched_index]
+        if isinstance(sched_item, LoopDimension):
+            known_vars.add(sched_item.name)
+            loop_count += 1
+        sched_index += 1
+
+        if loop_count < total_loop_count:
+            i = 0
+            while i < len(unused_index_exprs):
+                iexpr, index_deps = unused_index_exprs[i]
+                if (index_deps <= known_vars 
+                        and (iexpr.aggregate.name, iexpr.index)
+                            not in kernel.prefetch):
+                    unused_index_exprs.pop(i)
+                    new_name = "reg_prefetch_"+iexpr.aggregate.name+str(sched_index)
+                    reg_pf[iexpr] = new_name
+                    schedule.insert(sched_index,
+                            RegisterPrefetch(
+                                index_expr=iexpr, new_name=new_name))
+                    sched_index += 1
+                else:
+                    i += 1
+
+    return kernel.copy(schedule=schedule, register_prefetch=reg_pf)
+
+
+
+
 # code generation -------------------------------------------------------------
 class LoopyCCodeMapper(CCodeMapper):
     def __init__(self, kernel, get_prefetch_name):
@@ -796,9 +887,12 @@ class LoopyCCodeMapper(CCodeMapper):
             try:
                 pf = self.kernel.prefetch[expr.aggregate.name, expr.index]
             except KeyError:
-                return "tex1Dfetch(tex_%s, %s)" % (
-                        expr.aggregate.name,
-                        self.rec(expr.index, PREC_NONE))
+                try:
+                    return self.kernel.register_prefetch[expr]
+                except KeyError:
+                    return "tex1Dfetch(tex_%s, %s)" % (
+                            expr.aggregate.name,
+                            self.rec(expr.index, PREC_NONE))
             else:
                 return self.get_prefetch_name(pf)+"".join(
                         "[%s]" % dim.name for dim in pf.dims)
@@ -811,6 +905,9 @@ class LoopyCCodeMapper(CCodeMapper):
 
 class WriteOutput(Record):
     pass
+
+class RegisterPrefetch(Record):
+    __slots__ = ["index_expr", "new_name"]
 
 
 
@@ -1025,6 +1122,18 @@ def generate_code(kernel):
 
             inner = new_block
 
+        elif isinstance(sched_item, RegisterPrefetch):
+            inner = Block([
+                Initializer(POD(numpy.float32,
+                    sched_item.new_name),
+                    "tex1Dfetch(tex_%s, %s)"
+                    % (sched_item.index_expr.aggregate.name,
+                        ccm(sched_item.index_expr.index, PREC_NONE))),
+                inner])
+
+        else:
+            raise ValueError("invalid schedule item encountered")
+
     mod = Module()
 
     # add texture declarations
@@ -1123,16 +1232,24 @@ class CompiledKernel:
 
 
 # driver ----------------------------------------------------------------------
-def generate_all_kernels(orig_kernel, min_threads=None, min_blocks=None):
+def generate_all_kernels(orig_kernel, min_threads=None, min_blocks=None,
+        prefetch_hints={}):
     for knl in generate_dim_assignments(orig_kernel):
         if min_threads is not None and knl.thread_count() < min_threads:
             continue
         if min_blocks is not None and knl.block_count() < min_blocks:
             continue
 
-        for pf_knl in generate_all_prefetching_kernels(knl):
-            for sch_knl in generate_loop_schedules(pf_knl):
-                yield sch_knl
+        if False:
+            for d in knl.dims:
+                print d
+            print "-------------------------------------------------------"
+            raw_input()
+        else:
+            for pf_knl in generate_all_prefetching_kernels(knl,
+                    prefetch_hints):
+                for sch_knl in generate_loop_schedules(pf_knl):
+                    yield insert_register_prefetches(sch_knl)
 
 
 
@@ -1163,6 +1280,7 @@ def drive_timing_run(kernel_generator, launch, flop_count=None):
 
 
 
+
 def show_kernel_codes(kernel_generator):
     soln_count = 0
 
@@ -1179,7 +1297,7 @@ def show_kernel_codes(kernel_generator):
 
 
 
-def main():
+def main_matrix_mul():
     n = 16*34
     from pymbolic import var
     a, b, c, i, j, k = [var(s) for s in "abcijk"]
@@ -1217,9 +1335,86 @@ def main():
 
 
 
+def main_elwise_scaled_matrix_mul():
+    Np = 64
+    K = 2000
+    from pymbolic import var
+    m, u, v, g, i, j, k = [var(s) for s in "muvgijk"]
+
+    knl = make_loop_kernel([
+        LoopDimension("i", Np),
+        LoopDimension("j", Np),
+        LoopDimension("k", K),
+        ], [ 
+        (v[i+Np*k], m[i+Np*j]*u[j+Np*k]*g[k]) 
+        ])
+
+    gen_kwargs = {
+            "min_threads": 128,
+            "min_blocks": 32,
+            "prefetch_hints": {"g": False, "m":True},
+            }
+
+    if True and HAVE_CUDA:
+        if HAVE_CUDA:
+            g = curandom.rand((K))
+            u = curandom.rand((Np, K))
+            m = curandom.rand((Np, Np))
+            v = gpuarray.empty_like(u)
+
+        def launcher(grid, kernel, texref_lookup):
+            g.bind_to_texref_ext(texref_lookup["g"])
+            u.bind_to_texref_ext(texref_lookup["u"])
+            m.bind_to_texref_ext(texref_lookup["m"])
+            kernel.prepared_call(grid, v.gpudata)
+
+        drive_timing_run(
+                generate_all_kernels(knl, **gen_kwargs), 
+                launcher, 2*Np**2*K)
+    else:
+        show_kernel_codes(generate_all_kernels(knl, **gen_kwargs))
+
+
+
+
+def main_transpose():
+    n = 16*48
+    from pymbolic import var
+    a, b, i, j = [var(s) for s in "abij"]
+
+    k = make_loop_kernel([
+        LoopDimension("i", n),
+        LoopDimension("j", n),
+        ], [ 
+        (b[i+n*j], a[j+n*i]) 
+        ])
+
+    gen_kwargs = {
+            "min_threads": 128,
+            "min_blocks": 32,
+            }
+
+    if True and HAVE_CUDA:
+        if HAVE_CUDA:
+            a = curandom.rand((n, n))
+            b = gpuarray.empty_like(a)
+
+        def launcher(grid, kernel, texref_lookup):
+            a.bind_to_texref_ext(texref_lookup["a"])
+            kernel.prepared_call(grid, b.gpudata)
+
+        drive_timing_run(
+                generate_all_kernels(k, **gen_kwargs), 
+                launcher, 0)
+    else:
+        show_kernel_codes(generate_all_kernels(k, **gen_kwargs))
+
+
+
+
 def main_volume_d_dx():
     Np =  128
-    K = 64
+    K = 22000
     from pymbolic import var
 
     D, g, u, p, i, j, k = [var(s) for s in "Dgupijk"]
@@ -1321,3 +1516,4 @@ def main_hex_volume_d_dx():
 
 if __name__ == "__main__":
     main_hex_volume_d_dx()
+    #main_elwise_scaled_matrix_mul()
