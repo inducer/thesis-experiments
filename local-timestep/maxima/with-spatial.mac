@@ -1,0 +1,218 @@
+kill(all);
+load("eigen");
+
+/* Tools -------------------------------------------------------------------- */
+vstack:append;
+
+linear_combination(a, b):=block([n],
+  n:length(a),
+  assert(n=length(b)),
+  sum(a[i]*b[i], i, 1, n)),
+assert(condition):=if not condition then error("Assertion violated") else true$
+
+hstack(a,b):=transpose(append(transpose(a),transpose(b)));
+
+vec_to_list(v):=if listp(v[1]) then
+    makelist(v[i,1],i,1,length(v))
+  else
+    makelist(v[i],i,1,length(v));
+
+chop_matrix(A, n, m):=block([N,M],
+  N:length(A),
+  M:length(A[1]),
+  [[
+  genmatrix(lambda([i,j], A[i,j]), n, m),
+  genmatrix(lambda([i,j], A[i,m+j]), n, M-m)
+  ],[
+  genmatrix(lambda([i,j], A[n+i,j]), N-n, m),
+  genmatrix(lambda([i,j], A[n+i,m+j]), N-n, M-m)
+  ]]);
+
+mycoeffmat(tgt, arg):=genmatrix(
+  lambda([i,j], diff(tgt[i], arg[j])), length(tgt), length(arg));
+
+
+safe_power(a, b):=if a=0 and b=0 then 1 else a^b;
+
+rotate_insert(item, lst):=cons(item, makelist(lst[i],i,1,length(lst)-1));
+
+
+
+
+/* DG matrices -------------------------------------------------------------- */
+make_dg0_central_mat(nsmall,nlarge):=genmatrix(
+  lambda([i,j], block([dx,v],
+    if i<=nsmall then dx:dxs else dx:dxl,
+    v:0,
+    if j-1 = mod(i-1-1,nsmall+nlarge) then v:v+2/dx,
+    if j-1 = mod(i+1-1,nsmall+nlarge) then v:v-2/dx,
+    v)),
+  nsmall+nlarge, nsmall+nlarge);
+
+make_dg0_upwind_mat(nsmall,nlarge):=genmatrix(
+  lambda([i,j], block([dx,v],
+    if i<=nsmall then dx:dxs else dx:dxl,
+    v:0,
+    if j-1 = mod(i-1-1,nsmall+nlarge) then v:v+1/dx,
+    if j = i then v:v-1/dx,
+    v)),
+  nsmall+nlarge, nsmall+nlarge);
+
+
+
+
+
+/* AB coefficients ---------------------------------------------------------- */
+make_generic_ab_coefficients(levels, int_start, int_end):=block(
+  [n, eqns,vars],
+  n:length(levels),
+  vars:makelist(concat(myvar,i), i, 1, n),
+  eqns:makelist(
+    sum(vars[j+1]*safe_power(levels[j+1], i), j, 0, n-1)=1/(i+1)*(int_end^(i+1)-int_start^(i+1)),
+    i, 0, n-1),
+  subst(solve(eqns, vars)[1], vars));
+
+make_ab_coefficients(order):=make_generic_ab_coefficients(
+  makelist(-i,i,0,order-1), 0, 1);
+
+
+
+
+
+/* Regular AB --------------------------------------------------------------- */
+build_ab(order, a):=block(
+  [maincoeff, y],
+  y:makelist(makelist(concat(y,j,h,i), 
+    j, 1, length(a[1])),
+    i, 0, order-1),
+  maincoeff:make_ab_coefficients(order),
+  [y[1]+dt*sum(maincoeff[i]*a.y[i], i, 1, order),y]
+  );
+
+
+
+
+
+/* Multirate AB ------------------------------------------------------------- */
+build_multirate_ab(order, step_ratio, a):=block(
+  /* fastest-first according to Gear and Wells */
+  [n1, n2, yhist, zhist, yhist_orig, zhist_orig, y, z, maincoeff, levels,subcoeff],
+  n1:length(a[1][1]), n2:length(a[2][2]),
+  yhist:makelist(makelist(concat(y,j,h,i), 
+    j, 1, n1),
+    i, 0, order-1),
+  zhist:makelist(makelist(concat(z,j,h,i), 
+    j, 1, n2),
+    i, 0, order-1),
+
+  yhist_orig:yhist,
+  zhist_orig:zhist,
+
+  maincoeff:make_ab_coefficients(order),
+  levels:makelist(-i,i,0,order-1),
+  subcoeff:makelist(
+    make_generic_ab_coefficients(levels, (i-1)/step_ratio, i/step_ratio),
+    i, 1, step_ratio),
+
+  y:yhist[1],
+  z:zhist[1],
+
+  for i:1 thru step_ratio do block(
+    y:vec_to_list(y
+      +dt/step_ratio*sum(maincoeff[j]*a[1][1].yhist[j], j, 1, order)
+      +dt*sum(subcoeff[i][j]*a[1][2].zhist[j], j, 1, order)),
+    if i=step_ratio then block(
+      z:vec_to_list(z
+        +dt/step_ratio*sum(maincoeff[j]*a[2][1].yhist[j], j, 1, order)
+        +dt*sum(maincoeff[j]*a[2][2].zhist[j], j, 1, order)),
+      zhist:rotate_insert(z,zhist)
+      ),
+    yhist:rotate_insert(y,yhist)
+    ),
+
+  [[yhist,zhist],[yhist_orig,zhist_orig]]
+  );
+
+mr_ab_coeff_mat(result):=block(
+  [yhist,zhist,yhist_orig,zhist_orig],
+  yhist:result[1][1],
+  zhist:result[1][2],
+  yhist_orig:result[2][1],
+  zhist_orig:result[2][2],
+  
+  arguments:apply(append, join(yhist_orig,zhist_orig)),
+  results:apply(append, join(yhist,zhist)),
+  [mycoeffmat(results, arguments), arguments]
+  );
+
+
+
+
+/* !!! slowest-first */
+build_mr_ab1(a):=block([ynh,yn,zn,ynp,znp,xn,xnp],
+  yn:makelist(concat(y,i), i, 1, length(a[1][1])),
+  zn:makelist(concat(z,i), i, 1, length(a[2][2])),
+  
+  ynh: yn + dt/2*a[1][1].yn + dt/2*a[1][2].zn,
+  ynp: ynh + dt/2*a[1][1].ynh + dt/2*a[1][2].zn,
+  znp: zn + dt*a[2][1].yn + dt*a[2][2].zn,
+  xn:append(yn,zn),
+  xnp:append(vec_to_list(ynp),vec_to_list(znp)),
+  [xnp,xn]
+  );
+
+
+
+
+/* RK4 ---------------------------------------------------------------------- */
+build_rk4(a):=block([yn,ynp,k1,k2,k3,k4],
+  yn:makelist(concat(y,i), i, 1, length(a[1])),
+  k1:a.yn,
+  k2:a.(yn+dt/2*k1),
+  k3:a.(yn+dt/2*k2),
+  k4:a.(yn+dt*k3),
+  [yn+dt/6*(k1+2*k2+2*k3+k4), yn]);
+
+
+
+
+/* Actual calculations ------------------------------------------------------ */
+/*
+rk4:build_rk4([[k]])[1,1];
+rk4c:ratsubst(a+%i*b,dt*k,rk4);
+plot3d(if abs(rk4c)<1 then abs(rk4c) else 0, [a,-4,2], [b,-3,3], [grid,100,100],[gnuplot_pm3d,true],[gnuplot_preamble,"set hidden3d"]);
+*/
+
+
+small_els:2;
+/*
+dg_mat:subst([dxl=dx,dxs=dx/2], make_dg0_upwind_mat(small_els,1));
+*/
+dg_mat:subst([dxl=dx,dxs=dx/2], make_dg0_central_mat(small_els,1));
+cmresult:mr_ab_coeff_mat(ratsimp(build_multirate_ab(2,2,chop_matrix(dg_mat,small_els,small_els))));
+companion_matrix:cmresult[1];
+
+/*
+r4dg:ratsimp(build_rk4(dg_mat));
+r4dgmat:mycoeffmat(vec_to_list(r4dg[1]),r4dg[2]);
+r4ev:abs(eigenvalues(r4dgmat)[1][1]);
+plot3d(if r4ev > 1 then 0 else r4ev, 
+  [dt,0,1], [dx,0,1], 
+  [grid,100,100],[gnuplot_pm3d,true],[gnuplot_preamble,"set hidden3d;set xlabel \"dt\""]);
+*/
+
+/*
+mr_ab1_dg:build_mr_ab1(chop_matrix(dg_mat, 1, 1));
+mr_ab1_dg_mat:mycoeffmat(vec_to_list(mr_ab1_dg[1]),mr_ab1_dg[2]);
+*/
+/*
+mr_ab1_dg_ev:abs(eigenvalues(mr_ab1_dg_mat)[1])[1];
+*/
+/*
+plot3d(if mr_ab1_dg_ev > 1 then 0 else mr_ab1_dg_ev, 
+  [dt,0,0.1], [dx,0,1], 
+  [grid,100,100],[gnuplot_pm3d,true],[gnuplot_preamble,"set hidden3d;set xlabel \"dt\""]);
+  */
+
+test_a:[[[[b]],[[c]]],[[[d]],[[e]]]];
+
