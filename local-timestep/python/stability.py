@@ -53,10 +53,18 @@ def find_stable_k(stepper_maker, angle):
                 return mag
         return refine(stepper_maker, angle, mag, mag*2)
 
+class StabPointFinder:
+    def __init__(self, stepper_maker):
+        self.stepper_maker = stepper_maker
+
+    def __call__(self, angle):
+        return make_k(angle, find_stable_k(self.stepper_maker, angle))
+
 def plot_stability_region(stepper_maker, **kwargs):
     points = []
-    for angle in numpy.arange(0, 2*pi, 2*pi/400):
-        points.append(make_k(angle, find_stable_k(stepper_maker, angle)))
+    angles = numpy.arange(0, 2*pi, 2*pi/200)
+    from multiprocessing import Pool
+    points = Pool().map(StabPointFinder(stepper_maker), angles)
 
     points = numpy.array(points)
 
@@ -71,17 +79,41 @@ class ABMaker:
         from hedge.timestep import AdamsBashforthTimeStepper
         return AdamsBashforthTimeStepper(self.order)
 
+class DumkaMaker:
+    def __init__(self, pol_index):
+        self.pol_index = pol_index
+
+    def __call__(self):
+        from hedge.timestep.dumka3 import Dumka3TimeStepper
+        return Dumka3TimeStepper(self.pol_index, dtype=numpy.complex128)
+
+class RK4Maker:
+    def __call__(self):
+        from hedge.timestep.rk4 import RK4TimeStepper
+        return RK4TimeStepper(dtype=numpy.complex128)
+
+
 if __name__ == "__main__":
     from hedge.timestep import RK4TimeStepper
+    from hedge.timestep.ssprk3 import SSPRK3TimeStepper
 
     #sm = RK4TimeStepper
-    sm = ABMaker(5)
+    #sm = ABMaker(5)
+    #sm = SSPRK3TimeStepper
+    sm = DumkaMaker(1)
     from matplotlib.pyplot import *
 
+    rc("font", size=8)
     title("Stability Region")
     xlabel("Re $k$")
     ylabel("Im $k$")
     grid()
 
-    plot_stability_region(sm)
-    show()
+    for pol_i in range(5, -1, -1):
+        plot_stability_region(DumkaMaker(pol_i), 
+                label="Dumka3(%d)" % pol_i, alpha=0.3)
+    #plot_stability_region(RK4Maker(), label="C/K RK4/5", alpha=0.3)
+    legend(labelspacing=0.1, borderpad=0.3)
+    savefig("stab-regions.png", dpi=150)
+
+
