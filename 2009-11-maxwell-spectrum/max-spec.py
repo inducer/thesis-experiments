@@ -75,9 +75,10 @@ def main():
 
     from hedge.models.em import TMMaxwellOperator
     from hedge.mesh import TAG_ALL
-    from matplotlib.pyplot import plot, show, legend
+    from matplotlib.pyplot import plot, show, legend, clf, savefig, xlim, ylim, grid, title
 
-    for penalty_factor in [1, 5, 30]:
+    for i, penalty_factor in enumerate(numpy.linspace(0, 10, 100)):
+        clf()
         op = TMMaxwellOperator(1, 1, flux_type=penalty_factor,
                 #absorb_tag=TAG_ALL, 
                 pec_tag=TAG_ALL)
@@ -86,9 +87,14 @@ def main():
 
         eigval, eigvec = la.eig(op_mat)
         plot(eigval.real, eigval.imag, "o", label="penalty=%g" % penalty_factor)
+        title("Maxwell spectrum with flux penalty factor = %.2f" % penalty_factor)
+        xlim([-10,1])
+        ylim([-2.5,2.5])
+        grid()
+        savefig("maxspec-%04d.png" % i)
 
-    legend()
-    show()
+    #legend()
+    #show()
 
     eigval = sorted(eigval, key=lambda x: x.real)
 
