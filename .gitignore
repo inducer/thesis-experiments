@@ -52,3 +52,6 @@ gm_quadpoints.m
 *.db
 visitlog.py
 *.mpeg
+*.out
+*.ini
+*.msh
