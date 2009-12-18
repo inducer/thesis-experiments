@@ -1,3 +1,6 @@
+import numpy
+import numpy.linalg as la
+
 def plot_order_3_tri_poly_components():
     from hedge.polynomial import jacobi_function
     from hedge.tools import plot_1d
@@ -10,20 +13,18 @@ def plot_order_3_tri_poly_components():
     plot_1d(g, -1, 1)
 
 def plot_tri_polynomials_hi_res():
-    import numpy
-    import pylinear.array as num
     from hedge.discretization.local import TriangleDiscretization
     from hedge.polynomial import generic_vandermonde
     from pyvtk import PolyData, PointData, VtkData, Scalars, Vectors
 
-    tri_low = TriangularElement(3)
-    tri_high = TriangularElement(14)
+    tri_low = TriangleDiscretization(2)
+    tri_high = TriangleDiscretization(14)
 
     unodes = tri_high.unit_nodes()
 
     low_vdm = tri_low.vandermonde()
     point_values = generic_vandermonde(unodes, tri_low.basis_functions()).T
-    lagrange_values = (1/low_vdm.T) * point_values
+    lagrange_values = numpy.dot(la.inv(low_vdm.T), point_values)
 
     def three_vector(x):
         if len(x) == 3:
@@ -34,11 +35,14 @@ def plot_tri_polynomials_hi_res():
             return x[0], 0, 0.
 
     structure = PolyData(points=[three_vector(x) for x in unodes], 
-            polygons=tri_high.generate_submesh_indices())
+            polygons=tri_high.get_submesh_indices())
     pdatalist = []
+
+    mode_id_list = list(tri_low.generate_mode_identifiers())
     for i, row in enumerate(lagrange_values):
         pdatalist.append(Scalars(numpy.array(row), 
-            name="basis%d" % i, lookup_table="default"))
+            name="basis%s" % "_".join(str(z) for z in mode_id_list[i]), 
+            lookup_table="default"))
     vtk = VtkData(structure, "Hedge visualization", PointData(*pdatalist))
     vtk.tofile("basis.vtk")
 
@@ -49,7 +53,7 @@ def plot_tri_quad_weights():
     from hedge.polynomial import generic_vandermonde
     from pyvtk import PolyData, PointData, VtkData, Scalars, Vectors
 
-    edata = TriangularElement(3)
+    edata = TriangleDiscretization(3)
     unodes = edata.unit_nodes()
     mass_mat = edata.mass_matrix()
     ones = num.ones((mass_mat.shape[0],))
@@ -101,6 +105,7 @@ def visualize_single_tet():
 
 if __name__ == "__main__":
     #plot_tri_order_1_polynomials_hi_res()
+    plot_tri_polynomials_hi_res()
     #plot_tri_quad_weights()
     #plot_real_tri_quad_weights()
-    visualize_single_tet()
+    #visualize_single_tet()
