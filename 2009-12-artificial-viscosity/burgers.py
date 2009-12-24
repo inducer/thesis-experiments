@@ -107,13 +107,13 @@ def main(write_output=True, flux_type_arg="upwind"):
     n_elements = 20
 
     if rcon.is_head_rank:
-        if True:
+        if False:
             from hedge.mesh.generator import make_uniform_1d_mesh
             mesh = make_uniform_1d_mesh(case.a, case.b, 20, periodic=True)
         else:
             extent_y = 4
             dx = (case.b-case.a)/n_elements
-            subdiv = (n_elements, 1+extent_y//dx)
+            subdiv = (n_elements, int(1+extent_y//dx))
             from pytools import product
 
             from hedge.mesh.generator import make_rect_mesh
@@ -129,8 +129,8 @@ def main(write_output=True, flux_type_arg="upwind"):
         mesh_data = rcon.receive_mesh()
 
     discr = rcon.make_discretization(mesh_data, order=order)
-    vis_discr = rcon.make_discretization(mesh_data, order=10)
-    #vis_discr = discr
+    #vis_discr = rcon.make_discretization(mesh_data, order=10)
+    vis_discr = discr
 
     from hedge.discretization import Projector
     vis_proj = Projector(discr, vis_discr)
@@ -145,12 +145,13 @@ def main(write_output=True, flux_type_arg="upwind"):
             ConstantGivenFunction, \
             TimeConstantGivenFunction, \
             TimeDependentGivenFunction
-    from hedge.tools.second_order import \
+    from hedge.tools.second_order import (
+            IPDGSecondDerivative, \
             LDGSecondDerivative, \
-            CentralSecondDerivative
+            CentralSecondDerivative)
     from hedge.models.burgers import BurgersOperator
     op = BurgersOperator(mesh.dimensions,
-            viscosity_scheme=LDGSecondDerivative())
+            viscosity_scheme=IPDGSecondDerivative())
 
     if rcon.is_head_rank:
         print "%d elements" % len(discr.mesh.elements)
@@ -192,20 +193,18 @@ def main(write_output=True, flux_type_arg="upwind"):
     from hedge.tools.bad_cell import (
             PerssonPeraireDiscontinuitySensor,
             DecayGatingDiscontinuitySensorBase)
-    sub_sensor = DecayGatingDiscontinuitySensorBase(5*h/(order)).bind(discr)
-    sensor2 = PerssonPeraireDiscontinuitySensor(kappa=2,
-            eps0=h/order, s_0=numpy.log10(1/order**4)).bind(discr)
-    decay_expt = DecayGatingDiscontinuitySensorBase(h/(order)) \
-            .bind_quantity(discr, "decay_expt")
-    decay_lmc = DecayGatingDiscontinuitySensorBase(h/(order)) \
-            .bind_quantity(discr, "log_modal_coeffs")
-    decay_estimated_lmc = DecayGatingDiscontinuitySensorBase(h/(order)) \
-            .bind_quantity(discr, "estimated_log_modal_coeffs")
+    sub_sensor = DecayGatingDiscontinuitySensorBase(5*h/(order))
+    bound_sub_sensor = sub_sensor.bind(discr)
+    #sensor2 = PerssonPeraireDiscontinuitySensor(kappa=2,
+            #eps0=h/order, s_0=numpy.log10(1/order**4)).bind(discr)
+    decay_expt = sub_sensor.bind_quantity(discr, "decay_expt")
+    decay_lmc = sub_sensor.bind_quantity(discr, "log_modal_coeffs")
+    decay_estimated_lmc = sub_sensor.bind_quantity(discr, "estimated_log_modal_coeffs")
 
     from smoother import TriBlobSmoother
     smoother = TriBlobSmoother(discr)
 
-    sensor = lambda u: smoother(sub_sensor(u))
+    sensor = lambda u: smoother(bound_sub_sensor(u))
 
     rhs = op.bind(discr, sensor=sensor)
     #rhs = op.bind(discr, sensor=sensor)
@@ -228,9 +227,7 @@ def main(write_output=True, flux_type_arg="upwind"):
         #stab_fac = 1.6 # dumka3(3), central
         #stab_fac = 3 # dumka3(4), central
 
-        #stab_fac = 0.01 # RK4
-        stab_fac = 0.05 # dumka3(3), central
-        #stab_fac = 3 # dumka3(4), central
+        stab_fac = 0.05 # dumka3(3)
 
         dt = stab_fac*op.estimate_timestep(discr,
                 stepper=RK4TimeStepper(), t=0, fields=u)
@@ -263,11 +260,6 @@ def main(write_output=True, flux_type_arg="upwind"):
                     time=t,
                     step=step)
                 visf.close()
-
-            #if step == 450:
-                #print decay_lmc(u).reshape(20,5)
-                #print decay_alpha(u).reshape(20,5)
-                #raw_input()
 
             u = stepper(u, t, dt, rhs)
             #u2 = stepper(u2, t, dt, rhs2)
