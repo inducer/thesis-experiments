@@ -21,6 +21,7 @@ from __future__ import division, with_statement
 import numpy
 import scipy.linalg as la
 la.cond = numpy.linalg.cond
+from matplotlib.pyplot import plot, show, legend, clf, savefig, xlim, ylim, grid, title, spy
 
 
 
@@ -238,8 +239,36 @@ def main():
         #return bool(area > 0.002 + 0.005*la.norm(barycenter)**2)
         return bool(area > 0.01 + 0.03*la.norm(barycenter)**2)
 
-    from hedge.mesh import make_rect_mesh
-    mesh = make_rect_mesh(a=(-1,-1), b=(1,1,), refine_func=refine_func)
+    if False:
+        from hedge.mesh import make_rect_mesh
+        mesh = make_rect_mesh(a=(-1,-1), b=(1,1,), refine_func=refine_func)
+    elif True:
+        class case:
+            a = -1
+            b = 1
+
+        n_elements = 20
+        from hedge.mesh.generator import make_uniform_1d_mesh
+        mesh = make_uniform_1d_mesh(case.a, case.b, n_elements, periodic=True)
+    else:
+        class case:
+            a = -1
+            b = 1
+
+        n_elements = 5
+
+        extent_y = 0.5
+        dx = (case.b-case.a)/n_elements
+        subdiv = (n_elements, int(1+extent_y//dx))
+        print subdiv
+        from pytools import product
+
+        from hedge.mesh.generator import make_rect_mesh
+        mesh = make_rect_mesh((case.a, 0), (case.b, extent_y), 
+                periodicity=(True, True), 
+                subdivisions=subdiv,
+                max_area=(case.b-case.a)*extent_y/(2*product(subdiv))
+                )
 
     def rhs(x, el):
         if la.norm(x) < 0.1:
@@ -249,19 +278,19 @@ def main():
 
     from hedge.models.poisson import PoissonOperator
     from hedge.mesh import TAG_ALL, TAG_NONE
-    from hedge.models.nd_calculus import (
+    from hedge.tools.second_order import (
             StabilizedCentralSecondDerivative,
             LDGSecondDerivative,
-            LocalOnlySecondDerivative)
+            IPDGSecondDerivative)
 
-    op_kwargs = dict(dimensions=2,
+    op_kwargs = dict(dimensions=mesh.dimensions,
             dirichlet_tag=TAG_ALL,
             neumann_tag=TAG_NONE, 
-            strong_form=False,
             )
     op = PoissonOperator(
-            #scheme=LDGSecondDerivative(),
-            scheme=StabilizedCentralSecondDerivative(),
+            scheme=LDGSecondDerivative(),
+            #scheme=IPDGSecondDerivative(),
+            #scheme=StabilizedCentralSecondDerivative(),
             **op_kwargs)
 
     orders = range(1, 6)
@@ -271,7 +300,8 @@ def main():
 
     for n in orders:
         discr = rcon.make_discretization(mesh, order=n,
-                    default_scalar_type=numpy.float64)
+                    default_scalar_type=numpy.float64,
+                    debug=["dump_op_code"])
         eg, = discr.element_groups
         ldis = eg.local_discretization
         np = ldis.node_count()
@@ -281,6 +311,11 @@ def main():
         op_mat = build_mat(discr, bound_op)
 
         eigval, eigvec = la.eig(op_mat)
+        plot(eigval.real, eigval.imag, "o")
+        grid()
+        show()
+        return
+
         bj_mat = make_block_jacobi_preconditioner(discr, op_mat)
 
         block_avg = block_average(discr, bj_mat, scale_method=None)
@@ -305,7 +340,7 @@ def main():
 
             pmat = make_matrix_free_block_diagonal_preconditioner(discr, op_local)
             eigval, eigvec = la.eig(numpy.dot(pmat, op_mat))
-            print max(abs(eigval.real)), min(abs(eigval.real))
+            # print max(abs(eigval.real)), min(abs(eigval.real))
             condition = max(abs(eigval.real))/min(abs(eigval.real))
             mf_conditions.append(condition)
 
@@ -339,7 +374,8 @@ def main():
             print name
 
             u = -parallel_cg(rcon, -op.bind(discr),
-                    bound_op.prepare_rhs(GivenFunction(rhs)),
+                    bound_op.prepare_rhs(
+                        discr.interpolate_volume_function(rhs)),
                     precon=precon_f,
                     tol=5e-10, debug_callback=cg_debug_callback,
                     dot=discr.nodewise_dot_product,
@@ -353,7 +389,6 @@ def main():
             with vis.make_file("soln") as visf:
                 vis.add_data(visf, [("u", u)])
 
-    from matplotlib.pyplot import plot, show, legend, clf, savefig, xlim, ylim, grid, title, spy
     #savefig("poisson-spec-strong%s.png" % strong)
 
     #print strong, la.norm(op_mat-op_mat.T)

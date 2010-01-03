@@ -17,8 +17,7 @@
 
 from __future__ import division
 import numpy
-import numpy.linalg as la
-from math import sin, cos, pi, sqrt
+from math import sin, pi, sqrt
 
 
 
@@ -92,9 +91,6 @@ class OffCenterStationaryTestCase:
 
 
 def main(write_output=True, flux_type_arg="upwind"):
-    from hedge.tools import mem_checkpoint
-    from math import floor
-
     #case = CenteredStationaryTestCase()
     #case = OffCenterStationaryTestCase()
     case = OffCenterMigratingTestCase()
@@ -107,7 +103,7 @@ def main(write_output=True, flux_type_arg="upwind"):
     n_elements = 20
 
     if rcon.is_head_rank:
-        if False:
+        if True:
             from hedge.mesh.generator import make_uniform_1d_mesh
             mesh = make_uniform_1d_mesh(case.a, case.b, 20, periodic=True)
         else:
@@ -179,7 +175,7 @@ def main(write_output=True, flux_type_arg="upwind"):
     add_simulation_quantities(logmgr)
     discr.add_instrumentation(logmgr)
 
-    from hedge.log import Integral, LpNorm
+    from hedge.log import LpNorm
     u_getter = lambda: u
     logmgr.add_quantity(LpNorm(u_getter, discr, p=1, name="l1_u"))
 
