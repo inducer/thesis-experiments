@@ -125,8 +125,8 @@ def main(write_output=True, flux_type_arg="upwind"):
         mesh_data = rcon.receive_mesh()
 
     discr = rcon.make_discretization(mesh_data, order=order)
-    #vis_discr = rcon.make_discretization(mesh_data, order=10)
-    vis_discr = discr
+    vis_discr = rcon.make_discretization(mesh_data, order=10)
+    #vis_discr = discr
 
     from hedge.discretization import Projector
     vis_proj = Projector(discr, vis_discr)
@@ -196,6 +196,9 @@ def main(write_output=True, flux_type_arg="upwind"):
     decay_expt = sub_sensor.bind_quantity(discr, "decay_expt")
     decay_lmc = sub_sensor.bind_quantity(discr, "log_modal_coeffs")
     decay_estimated_lmc = sub_sensor.bind_quantity(discr, "estimated_log_modal_coeffs")
+    jump_part = sub_sensor.bind_quantity(discr, "jump_part")
+    jump_modes = sub_sensor.bind_quantity(discr, "modal_coeffs_jump")
+    jump_lmc = sub_sensor.bind_quantity(discr, "log_modal_coeffs_jump")
 
     from smoother import TriBlobSmoother
     smoother = TriBlobSmoother(discr)
@@ -209,7 +212,7 @@ def main(write_output=True, flux_type_arg="upwind"):
     from hedge.timestep import RK4TimeStepper
     from hedge.timestep.dumka3 import Dumka3TimeStepper
     #stepper = RK4TimeStepper()
-    stepper = Dumka3TimeStepper(3)
+    stepper = Dumka3TimeStepper(3, rtol=1e-6)
     #stepper = Dumka3TimeStepper(4)
 
     stepper.add_instrumentation(logmgr)
@@ -223,13 +226,16 @@ def main(write_output=True, flux_type_arg="upwind"):
         #stab_fac = 1.6 # dumka3(3), central
         #stab_fac = 3 # dumka3(4), central
 
-        stab_fac = 0.05 # dumka3(3)
-
-        dt = stab_fac*op.estimate_timestep(discr,
+        adv_dt = op.estimate_timestep(discr,
                 stepper=RK4TimeStepper(), t=0, fields=u)
+        next_dt = 0.05 * adv_dt
+
+        logmgr.set_constant("adv_dt", adv_dt)
 
         step_it = times_and_steps(
-                final_time=case.final_time, logmgr=logmgr, max_dt_getter=lambda t: dt)
+                final_time=case.final_time, logmgr=logmgr, 
+                max_dt_getter=lambda t: next_dt,
+                taken_dt_getter=lambda: taken_dt)
         from hedge.optemplate import  InverseVandermondeOperator
         inv_vdm = InverseVandermondeOperator().bind(discr)
 
@@ -250,15 +256,17 @@ def main(write_output=True, flux_type_arg="upwind"):
                     ("sensor_dg", vis_proj(sensor(u))), 
                     #("sensor_pp", vis_proj(sensor2(u2))), 
                     ("expt_u_dg", vis_proj(decay_expt(u))), 
+                    ("jump_part", vis_proj(jump_part(u))), 
+                    ("jump_modes", vis_proj(jump_modes(u))), 
                     ("lmc_u_dg", vis_proj(decay_lmc(u))), 
+                    ("lmc_u_dg_jump", vis_proj(jump_lmc(u))), 
                     ("est_lmc_u_dg", vis_proj(decay_estimated_lmc(u))), 
                     ] + extra_fields,
                     time=t,
                     step=step)
                 visf.close()
 
-            u = stepper(u, t, dt, rhs)
-            #u2 = stepper(u2, t, dt, rhs2)
+            u, t, taken_dt, next_dt = stepper(u, t, next_dt, rhs)
 
     finally:
         if write_output:
@@ -271,15 +279,3 @@ def main(write_output=True, flux_type_arg="upwind"):
 
 if __name__ == "__main__":
     main()
-
-
-
-
-# entry points for py.test ----------------------------------------------------
-def test_advection():
-    from pytools.test import mark_test
-    mark_long = mark_test.long
-
-    for flux_type in ["upwind", "central", "lf"]:
-        yield "advection with %s flux" % flux_type, \
-                mark_long(main), False, flux_type

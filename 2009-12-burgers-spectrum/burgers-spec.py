@@ -17,7 +17,7 @@ def make_bump(discr):
         except KeyError:
             i = 0
             if i == 0:
-                if el.id > 5:
+                if 50/3 <= el.id < 2*50/3:
                     result = 1
                 else:
                     result = 0
@@ -73,8 +73,7 @@ def main():
                 )
 
     order = 5
-    for viscosity in [0., 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1]:
-    #for viscosity in [1.]:
+    for viscosity in [0, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2]:
         from hedge.tools.second_order import (
                 IPDGSecondDerivative, \
                 LDGSecondDerivative, \
@@ -90,7 +89,7 @@ def main():
         discr = rcon.make_discretization(mesh, order=order,
                     default_scalar_type=numpy.float64,
                     debug=[
-                        "dump_op_code"
+                        #"dump_op_code"
                         ])
 
         from hedge.visualization import SiloVisualizer
@@ -106,7 +105,7 @@ def main():
         def ic_constant(x, el):
             return 1
 
-        lin_center = discr.interpolate_volume_function(ic_constant)
+        lin_center = discr.interpolate_volume_function(ic_sawtooth)
 
         bump = make_bump(discr)
         bound_op = op.bind(discr, u0=lin_center, sensor=lambda u: viscosity*bump)
@@ -118,6 +117,8 @@ def main():
                     - lin_center_rhs)
 
         def apply_op(operand):
+            from warning import warn
+            warn("unlinearized operator")
             return bound_op(0, operand)
 
         n = len(discr)
@@ -127,10 +128,10 @@ def main():
         pb = ProgressBar("mat build", n)
 
         from hedge.tools import unit_vector
-        mag = 1e-6
+        mag = 1e-12
         for i in xrange(n):
-            #x = (1/mag)*apply_linearized_burgers_op(
-            x = (1/mag)*apply_op(
+            x = (1/mag)*apply_linearized_burgers_op(
+            #x = (1/mag)*apply_op(
                     mag*unit_vector(n, i, dtype=discr.default_scalar_type))
             op_mat[:, i] = x
             pb.progress()
@@ -146,7 +147,11 @@ def main():
         #xlim([-1500,400])
         #ylim([-1000,1000])
         title("Spectrum of Poorly Linearized DG Burgers N=%d, $\mu$=%s" % (order, viscosity))
-        savefig("burgers-eigval-%.2e.png" % viscosity)
+        if viscosity is not None:
+            visc_str= "%.2e" % viscosity
+        else:
+            visc_str= "%s" % viscosity
+        savefig("burgers-eigval-%s.png" % visc_str)
 
         if False:
             eigval = sorted(eigval, key=lambda x: x.real)
