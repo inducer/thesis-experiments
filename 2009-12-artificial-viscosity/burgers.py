@@ -22,7 +22,7 @@ from math import sin, pi, sqrt
 
 
 
-class ExactTestCase:
+class ExactTestCase(object):
     a = 0
     b = 150
     final_time = 5000
@@ -61,7 +61,7 @@ class ExactTestCase:
 
         return max(f(x, shock_loc), f(x-self.b, shock_loc-self.b))
 
-class OffCenterMigratingTestCase:
+class OffCenterMigratingTestCase(object):
     a = -pi
     b = pi
     final_time = 10
@@ -70,7 +70,7 @@ class OffCenterMigratingTestCase:
         return -0.4+sin(x+0.1)
 
 
-class CenteredStationaryTestCase:
+class CenteredStationaryTestCase(object):
     # does funny things to P-P
     a = -pi
     b = pi
@@ -79,7 +79,7 @@ class CenteredStationaryTestCase:
     def u0(self, x):
         return -sin(x)
 
-class OffCenterStationaryTestCase:
+class OffCenterStationaryTestCase(object):
     # does funny things to P-P
     a = -pi
     b = pi
@@ -90,33 +90,61 @@ class OffCenterStationaryTestCase:
 
 
 
+def make_ui():
+    from smoother import TriBlobSmoother
+
+    variables = {
+        "vis_interval": 10,
+        "order": 4,
+        "n_elements": 20,
+        #"case": CenteredStationaryTestCase(),
+        #"case": OffCenterStationaryTestCase(),
+        "case": OffCenterMigratingTestCase(),
+        #"case": ExactTestCase(),
+        "smoother": TriBlobSmoother(use_max=False),
+        "sensor": "decay-gating",
+        }
+
+    constants = {
+            }
+    for cl in [
+            CenteredStationaryTestCase,
+            OffCenterStationaryTestCase,
+            OffCenterMigratingTestCase,
+            ExactTestCase,
+            TriBlobSmoother,
+            ]:
+        constants[cl.__name__] = cl
+
+    from pytools import CPyUserInterface
+    return CPyUserInterface(variables, constants)
+
+
+
+
 def main(write_output=True, flux_type_arg="upwind"):
-    #case = CenteredStationaryTestCase()
-    #case = OffCenterStationaryTestCase()
-    case = OffCenterMigratingTestCase()
-    #case = ExactTestCase()
 
     from hedge.backends import guess_run_context
     rcon = guess_run_context()
 
-    order = 4
-    n_elements = 20
+    ui = make_ui()
+    setup = ui.gather()
 
     if rcon.is_head_rank:
         if True:
             from hedge.mesh.generator import make_uniform_1d_mesh
-            mesh = make_uniform_1d_mesh(case.a, case.b, 20, periodic=True)
+            mesh = make_uniform_1d_mesh(setup.case.a, setup.case.b, 20, periodic=True)
         else:
             extent_y = 4
-            dx = (case.b-case.a)/n_elements
+            dx = (setup.case.b-setup.case.a)/n_elements
             subdiv = (n_elements, int(1+extent_y//dx))
             from pytools import product
 
             from hedge.mesh.generator import make_rect_mesh
-            mesh = make_rect_mesh((case.a, 0), (case.b, extent_y), 
+            mesh = make_rect_mesh((setup.case.a, 0), (setup.case.b, extent_y), 
                     periodicity=(True, True), 
                     subdivisions=subdiv,
-                    max_area=(case.b-case.a)*extent_y/(2*product(subdiv))
+                    max_area=(setup.case.b-setup.case.a)*extent_y/(2*product(subdiv))
                     )
 
     if rcon.is_head_rank:
@@ -124,9 +152,10 @@ def main(write_output=True, flux_type_arg="upwind"):
     else:
         mesh_data = rcon.receive_mesh()
 
-    discr = rcon.make_discretization(mesh_data, order=order,
-            quad_min_degrees={"quad":3*order},
-            debug=["dump_optemplate_stages"])
+    discr = rcon.make_discretization(mesh_data, order=setup.order,
+            quad_min_degrees={"quad":3*setup.order},
+            #debug=["dump_optemplate_stages"]
+            )
     vis_discr = rcon.make_discretization(mesh_data, order=10)
     #vis_discr = discr
 
@@ -158,13 +187,14 @@ def main(write_output=True, flux_type_arg="upwind"):
     import pymbolic
     var = pymbolic.var
 
-    u = discr.interpolate_volume_function(lambda x, el: case.u0(x[0]))
+    u = discr.interpolate_volume_function(lambda x, el: setup.case.u0(x[0]))
 
     # diagnostics setup -------------------------------------------------------
-    from pytools.log import LogManager, \
-            add_general_quantities, \
-            add_simulation_quantities, \
-            add_run_info
+    from pytools.log import (LogManager,
+            add_general_quantities,
+            add_simulation_quantities,
+            add_run_info,
+            MultiLogQuantity, EventCounter)
 
     if write_output:
         log_file_name = "burgers.dat"
@@ -177,9 +207,37 @@ def main(write_output=True, flux_type_arg="upwind"):
     add_simulation_quantities(logmgr)
     discr.add_instrumentation(logmgr)
 
+    logmgr.set_constant("case_name", type(setup.case).__name__)
+    logmgr.set_constant("sensor", setup.sensor)
+    logmgr.set_constant("smoother", str(setup.smoother))
+
     from hedge.log import LpNorm
     u_getter = lambda: u
     logmgr.add_quantity(LpNorm(u_getter, discr, p=1, name="l1_u"))
+
+    class TotalVariation(MultiLogQuantity):
+        def __init__(self):
+            MultiLogQuantity.__init__(self,
+                    names=["total_variation", "tv_change"])
+            self.last_tv = None
+
+        def __call__(self):
+            hires_u = vis_proj(u)
+            tv = numpy.sum(numpy.abs(numpy.diff(hires_u)))
+
+            if self.last_tv is None:
+                result = [tv, None]
+            else:
+                result = [tv, tv-self.last_tv]
+
+            self.last_tv = tv
+
+            return result
+
+    logmgr.add_quantity(TotalVariation())
+
+    rhs_counter = EventCounter("rhs_evaluations")
+    logmgr.add_quantity(rhs_counter)
 
     logmgr.add_watches(["step.max", "t_sim.max", "l1_u", "t_step.max"])
 
@@ -188,28 +246,59 @@ def main(write_output=True, flux_type_arg="upwind"):
     from pytools import product
     area = product(mesh_b[i] - mesh_a[i] for i in range(mesh.dimensions))
     h = sqrt(area/len(mesh.elements))
-    from hedge.bad_cell import (
-            PerssonPeraireDiscontinuitySensor,
-            DecayGatingDiscontinuitySensorBase)
-    sub_sensor = DecayGatingDiscontinuitySensorBase(5*h/(order))
-    bound_sub_sensor = sub_sensor.bind(discr)
-    #sensor2 = PerssonPeraireDiscontinuitySensor(kappa=2,
-            #eps0=h/order, s_0=numpy.log10(1/order**4)).bind(discr)
-    decay_expt = sub_sensor.bind_quantity(discr, "decay_expt")
-    decay_lmc = sub_sensor.bind_quantity(discr, "log_modal_coeffs")
-    decay_estimated_lmc = sub_sensor.bind_quantity(discr, "estimated_log_modal_coeffs")
-    jump_part = sub_sensor.bind_quantity(discr, "jump_part")
-    jump_modes = sub_sensor.bind_quantity(discr, "modal_coeffs_jump")
-    jump_lmc = sub_sensor.bind_quantity(discr, "log_modal_coeffs_jump")
 
-    from smoother import TriBlobSmoother
-    smoother = TriBlobSmoother(discr)
+    sensor_words = setup.sensor.split()
+    if sensor_words[0] == "decay_gating":
+        from hedge.bad_cell import (DecayGatingDiscontinuitySensorBase,
+                SkylineModeProcessor, AveragingModeProcessor)
 
-    sensor = lambda u: smoother(bound_sub_sensor(u))
+        correct_for_fit_error = False
+        mode_processor = None
 
-    rhs = op.bind(discr, sensor=sensor)
-    #rhs = op.bind(discr, sensor=sensor)
-    #rhs2 = op.bind(discr, sensor=lambda u: smoother(sensor2(u)))
+        if len(sensor_words) == 1:
+            pass
+        elif sensor_words[1] == "skyline":
+            mode_processor = SkylineModeProcessor()
+        elif sensor_words[1] == "averaging":
+            mode_processor = AveragingModeProcessor()
+        elif sensor_words[1] == "fit_correction":
+            correct_for_fit_error = True
+        else:
+            raise RuntimeError("invalid mode processor")
+
+        sensor = DecayGatingDiscontinuitySensorBase(
+                mode_processor=mode_processor,
+                correct_for_fit_error=correct_for_fit_error,
+                max_viscosity=5*h/setup.order)
+
+        if False:
+            decay_expt = sensor.bind_quantity(discr, "decay_expt")
+            decay_lmc = sensor.bind_quantity(discr, "log_modal_coeffs")
+            decay_estimated_lmc = sensor.bind_quantity(discr, "estimated_log_modal_coeffs")
+            jump_part = sensor.bind_quantity(discr, "jump_part")
+            jump_modes = sensor.bind_quantity(discr, "modal_coeffs_jump")
+            jump_lmc = sensor.bind_quantity(discr, "log_modal_coeffs_jump")
+
+    elif sensor_words[0] == "persson_peraire":
+        from hedge.bad_cell import PerssonPeraireDiscontinuitySensor
+        sensor = PerssonPeraireDiscontinuitySensor(kappa=2,
+            eps0=h/setup.order, s_0=numpy.log10(1/setup.order**4))
+
+    else:
+        raise RuntimeError("invalid sensor")
+
+    bound_sensor = sensor.bind(discr)
+
+    if setup.smoother is not None:
+        bound_smoother = setup.smoother.bind(discr)
+        pre_smoother_bound_sensor = bound_sensor
+
+        bound_sensor = lambda u: bound_smoother(pre_smoother_bound_sensor(u))
+
+    bound_op = op.bind(discr, sensor=bound_sensor)
+    def rhs(t, u):
+        rhs_counter.add()
+        return bound_op(t, u)
 
     from hedge.timestep import RK4TimeStepper
     from hedge.timestep.dumka3 import Dumka3TimeStepper
@@ -218,8 +307,6 @@ def main(write_output=True, flux_type_arg="upwind"):
     #stepper = Dumka3TimeStepper(4)
 
     stepper.add_instrumentation(logmgr)
-
-    u2 = u.copy()
 
     try:
         from hedge.timestep import times_and_steps
@@ -235,34 +322,33 @@ def main(write_output=True, flux_type_arg="upwind"):
         logmgr.set_constant("adv_dt", adv_dt)
 
         step_it = times_and_steps(
-                final_time=case.final_time, logmgr=logmgr, 
+                final_time=setup.case.final_time, logmgr=logmgr, 
                 max_dt_getter=lambda t: next_dt,
                 taken_dt_getter=lambda: taken_dt)
         from hedge.optemplate import  InverseVandermondeOperator
         inv_vdm = InverseVandermondeOperator().bind(discr)
 
         for step, t, dt in step_it:
-            if step % 10 == 0 and write_output:
-                if hasattr(case, "u_exact"):
+            if step % setup.vis_interval == 0 and write_output:
+                if hasattr(setup.case, "u_exact"):
                     extra_fields = [
                             ("u_exact", 
                                 vis_discr.interpolate_volume_function(
-                                    lambda x, el: case.u_exact(x[0], t)))]
+                                    lambda x, el: setup.case.u_exact(x[0], t)))]
                 else:
                     extra_fields = []
 
                 visf = vis.make_file("fld-%04d" % step)
                 vis.add_data(visf, [ 
                     ("u_dg", vis_proj(u)), 
+                    ("sensor", vis_proj(bound_sensor(u))), 
                     #("u_pp", vis_proj(u2)), 
-                    ("sensor_dg", vis_proj(sensor(u))), 
-                    #("sensor_pp", vis_proj(sensor2(u2))), 
-                    ("expt_u_dg", vis_proj(decay_expt(u))), 
-                    ("jump_part", vis_proj(jump_part(u))), 
-                    ("jump_modes", vis_proj(jump_modes(u))), 
-                    ("lmc_u_dg", vis_proj(decay_lmc(u))), 
-                    ("lmc_u_dg_jump", vis_proj(jump_lmc(u))), 
-                    ("est_lmc_u_dg", vis_proj(decay_estimated_lmc(u))), 
+                    #("expt_u_dg", vis_proj(decay_expt(u))), 
+                    #("jump_part", vis_proj(jump_part(u))), 
+                    #("jump_modes", vis_proj(jump_modes(u))), 
+                    #("lmc_u_dg", vis_proj(decay_lmc(u))), 
+                    #("lmc_u_dg_jump", vis_proj(jump_lmc(u))), 
+                    #("est_lmc_u_dg", vis_proj(decay_estimated_lmc(u))), 
                     ] + extra_fields,
                     time=t,
                     step=step)
@@ -274,7 +360,7 @@ def main(write_output=True, flux_type_arg="upwind"):
         if write_output:
             vis.close()
 
-        logmgr.save()
+        logmgr.close()
 
 
 

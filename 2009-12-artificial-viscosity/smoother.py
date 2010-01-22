@@ -149,18 +149,20 @@ def ramp_cubic(t):
 
 
 
-class TriBlobSmoother:
-    def __init__(self, discr, ramp=ramp_cubic, scaling=2):
-        self.discr = discr
-        self.mod = self.make_codepy_module(
-                discr.toolchain, discr.default_scalar_type,
-                discr.dimensions)
-        self.prepare(ramp, scaling)
+class TriBlobSmoother(object):
+    def __init__(self, ramp=ramp_cubic, scaling=2, use_max=False):
+        self.ramp = ramp
         self.scaling = scaling
+        self.use_max = use_max
 
-    def make_brick(self):
-        discr = self.discr
+    def __str__(self):
+        return "%s(ramp=%s, scaling=%r, use_max=%s)" % (
+                type(self).__name__,
+                self.ramp.__name__,
+                self.scaling,
+                self.use_max)
 
+    def make_brick(self, discr):
         from hedge.discretization import ones_on_volume
         mesh_volume = discr.integral(ones_on_volume(discr))
         dx = (mesh_volume / len(discr))**(1/discr.dimensions)
@@ -200,15 +202,14 @@ class TriBlobSmoother:
 
         return brick, brick_node_num_to_el_info
 
-    def prepare(self, ramp, scaling, exponent=1):
-        discr = self.discr
-        brick, brick_node_num_to_el_info = self.make_brick()
+    def prepare(self, discr, mod, ramp, scaling, exponent=1):
+        brick, brick_node_num_to_el_info = self.make_brick(discr)
 
         from pyrticle._internal import BoxFloat, BrickIterator
         from pytools import product
 
         # map (tgt_base_idx, source_idx) to el_vector
-        self.source_info_vec = siv = self.mod.SourceInfoVec()
+        siv = mod.SourceInfoVec()
         indices = []
 
         vertices = discr.mesh.points
@@ -229,7 +230,7 @@ class TriBlobSmoother:
 
                 bbox = BoxFloat(bbox_min, bbox_max).intersect(brick.bounding_box())
 
-                si = self.mod.SourceInfo()
+                si = mod.SourceInfo()
 
                 import pyublas
                 si.global_to_bary_mat = pyublas.why_not(global_to_bary.matrix, matrix=True,
@@ -262,7 +263,8 @@ class TriBlobSmoother:
 
                 siv.append(si)
 
-        self.tgt_indices = numpy.array(indices, dtype=numpy.uint32)
+        tgt_indices = numpy.array(indices, dtype=numpy.uint32)
+        return siv, tgt_indices
 
     def make_codepy_module(self, toolchain, dtype, dimensions):
         from codepy.libraries import add_codepy
@@ -388,9 +390,10 @@ class TriBlobSmoother:
                                         For("unsigned i = 0", "i < dim+1", "++i",
                                             S("nodeval *= ramp_cubic(scaling*bary[i]+1)")),
 
-                                        S("result_it[node_nr] += src_val*nodeval")
-                                        #S("result_it[node_nr] = std::max("
-                                            #"src_val*nodeval, result_it[node_nr])")
+                                        S("result_it[node_nr] = std::max("
+                                            "src_val*nodeval, result_it[node_nr])")
+                                        if self.use_max else
+                                        S("result_it[node_nr] += src_val*nodeval"),
                                         ])
                                     )
                                 ])
@@ -401,15 +404,24 @@ class TriBlobSmoother:
 
         return mod.compile(toolchain)
 
-    def __call__(self, u):
-        result = self.discr.volume_zeros(dtype=u.dtype)
+    def bind(self, discr):
+        mod = self.make_codepy_module(
+                discr.toolchain, discr.default_scalar_type,
+                discr.dimensions)
+        source_info_vec, tgt_indices = self.prepare(
+                discr, mod, self.ramp, self.scaling)
 
-        self.mod.compose_smoother(
-                self.source_info_vec,
-                self.tgt_indices,
-                self.discr.nodes,
-                result,
-                u,
-                self.scaling)
+        def do(u):
+            result = discr.volume_zeros(dtype=u.dtype)
 
-        return result
+            mod.compose_smoother(
+                    source_info_vec,
+                    tgt_indices,
+                    discr.nodes,
+                    result,
+                    u,
+                    self.scaling)
+
+            return result
+
+        return do
