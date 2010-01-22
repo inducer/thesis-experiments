@@ -124,7 +124,9 @@ def main(write_output=True, flux_type_arg="upwind"):
     else:
         mesh_data = rcon.receive_mesh()
 
-    discr = rcon.make_discretization(mesh_data, order=order)
+    discr = rcon.make_discretization(mesh_data, order=order,
+            quad_min_degrees={"quad":3*order},
+            debug=["dump_optemplate_stages"])
     vis_discr = rcon.make_discretization(mesh_data, order=10)
     #vis_discr = discr
 
@@ -186,7 +188,7 @@ def main(write_output=True, flux_type_arg="upwind"):
     from pytools import product
     area = product(mesh_b[i] - mesh_a[i] for i in range(mesh.dimensions))
     h = sqrt(area/len(mesh.elements))
-    from hedge.tools.bad_cell import (
+    from hedge.bad_cell import (
             PerssonPeraireDiscontinuitySensor,
             DecayGatingDiscontinuitySensorBase)
     sub_sensor = DecayGatingDiscontinuitySensorBase(5*h/(order))

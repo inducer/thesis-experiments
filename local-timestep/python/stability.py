@@ -109,7 +109,7 @@ if __name__ == "__main__":
     ylabel("Im $k$")
     grid()
 
-    for pol_i in range(5, -1, -1):
+    for pol_i in range(2, -1, -1):
         plot_stability_region(DumkaMaker(pol_i), 
                 label="Dumka3(%d)" % pol_i, alpha=0.3)
     #plot_stability_region(RK4Maker(), label="C/K RK4/5", alpha=0.3)
