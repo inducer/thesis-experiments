@@ -25,7 +25,7 @@ from math import sin, pi, sqrt
 class ExactTestCase(object):
     a = 0
     b = 150
-    final_time = 5000
+    final_time = 280 # that's how long the solution is exact, roughly
 
     def u0(self, x):
         return self.u_exact(x, 0)
@@ -99,10 +99,10 @@ def make_ui():
         "n_elements": 20,
         #"case": CenteredStationaryTestCase(),
         #"case": OffCenterStationaryTestCase(),
-        "case": OffCenterMigratingTestCase(),
-        #"case": ExactTestCase(),
+        #"case": OffCenterMigratingTestCase(),
+        "case": ExactTestCase(),
         "smoother": TriBlobSmoother(use_max=False),
-        "sensor": "decay-gating",
+        "sensor": "decay_gating",
         }
 
     constants = {
@@ -194,6 +194,7 @@ def main(write_output=True, flux_type_arg="upwind"):
             add_general_quantities,
             add_simulation_quantities,
             add_run_info,
+            SimulationLogQuantity,
             MultiLogQuantity, EventCounter)
 
     if write_output:
@@ -218,17 +219,23 @@ def main(write_output=True, flux_type_arg="upwind"):
     class TotalVariation(MultiLogQuantity):
         def __init__(self):
             MultiLogQuantity.__init__(self,
-                    names=["total_variation", "tv_change"])
+                    names=["total_variation", "tv_change", "tv_vs_min"])
             self.last_tv = None
+            self.min_tv = None
 
         def __call__(self):
             hires_u = vis_proj(u)
             tv = numpy.sum(numpy.abs(numpy.diff(hires_u)))
 
+            if self.min_tv is None:
+                self.min_tv = tv
+            else:
+                self.min_tv = min(tv, self.min_tv)
+
             if self.last_tv is None:
                 result = [tv, None]
             else:
-                result = [tv, tv-self.last_tv]
+                result = [tv, tv-self.last_tv, tv-self.min_tv]
 
             self.last_tv = tv
 
@@ -238,6 +245,21 @@ def main(write_output=True, flux_type_arg="upwind"):
 
     rhs_counter = EventCounter("rhs_evaluations")
     logmgr.add_quantity(rhs_counter)
+
+    class L2Error(SimulationLogQuantity):
+        def __init__(self):
+            SimulationLogQuantity.__init__(self, 0, "l2_error")
+            self.t = 0
+
+        def __call__(self):
+            u_exact = discr.interpolate_volume_function(
+                    lambda x, el: setup.case.u_exact(x[0], t))
+            self.t += self.dt
+            return discr.norm(u-u_exact)
+
+    if hasattr(setup.case, "u_exact"):
+        error_quantity = L2Error()
+        logmgr.add_quantity(error_quantity, interval=10)
 
     logmgr.add_watches(["step.max", "t_sim.max", "l1_u", "t_step.max"])
 
