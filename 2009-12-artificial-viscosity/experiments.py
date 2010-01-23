@@ -79,7 +79,7 @@ def survey():
                             ])
                         job.submit()
 
-                        raw_input()
+                        #raw_input()
 
 
 

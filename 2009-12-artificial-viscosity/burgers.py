@@ -94,7 +94,7 @@ def make_ui():
     from smoother import TriBlobSmoother
 
     variables = {
-        "vis_interval": 10,
+        "vis_interval": 5,
         "order": 4,
         "n_elements": 20,
         #"case": CenteredStationaryTestCase(),
@@ -122,7 +122,7 @@ def make_ui():
 
 
 
-def main(write_output=True, flux_type_arg="upwind"):
+def main(flux_type_arg="upwind"):
 
     from hedge.backends import guess_run_context
     rcon = guess_run_context()
@@ -163,16 +163,15 @@ def main(write_output=True, flux_type_arg="upwind"):
     vis_proj = Projector(discr, vis_discr)
 
     from hedge.visualization import VtkVisualizer, SiloVisualizer
-    if write_output:
-        vis = SiloVisualizer(vis_discr, rcon)
-        #vis = VtkVisualizer(vis_discr, rcon, "fld")
+    vis = SiloVisualizer(vis_discr, rcon)
+    #vis = VtkVisualizer(vis_discr, rcon, "fld")
 
     # operator setup ----------------------------------------------------------
     from hedge.data import \
             ConstantGivenFunction, \
             TimeConstantGivenFunction, \
             TimeDependentGivenFunction
-    from hedge.tools.second_order import (
+    from hedge.second_order import (
             IPDGSecondDerivative, \
             LDGSecondDerivative, \
             CentralSecondDerivative)
@@ -197,10 +196,7 @@ def main(write_output=True, flux_type_arg="upwind"):
             SimulationLogQuantity,
             MultiLogQuantity, EventCounter)
 
-    if write_output:
-        log_file_name = "burgers.dat"
-    else:
-        log_file_name = None
+    log_file_name = "burgers.dat"
 
     logmgr = LogManager(log_file_name, "w", rcon.communicator)
     add_run_info(logmgr)
@@ -330,6 +326,7 @@ def main(write_output=True, flux_type_arg="upwind"):
 
     stepper.add_instrumentation(logmgr)
 
+    next_vis_t = 0
     try:
         from hedge.timestep import times_and_steps
         # for visc=0.01
@@ -351,7 +348,7 @@ def main(write_output=True, flux_type_arg="upwind"):
         inv_vdm = InverseVandermondeOperator().bind(discr)
 
         for step, t, dt in step_it:
-            if step % setup.vis_interval == 0 and write_output:
+            if t >= next_vis_t:
                 if hasattr(setup.case, "u_exact"):
                     extra_fields = [
                             ("u_exact", 
@@ -376,12 +373,12 @@ def main(write_output=True, flux_type_arg="upwind"):
                     step=step)
                 visf.close()
 
+                next_vis_t += setup.vis_interval
+
             u, t, taken_dt, next_dt = stepper(u, t, next_dt, rhs)
 
     finally:
-        if write_output:
-            vis.close()
-
+        vis.close()
         logmgr.close()
 
 
