@@ -44,7 +44,7 @@ def survey():
                     #O("CenteredStationaryTestCase"),
                     #O("OffCenterStationaryTestCase"),
                     #O("OffCenterMigratingTestCase"),
-                    O("ExactTestCase"),
+                    O("LeaningTriangleTestCase"),
                     ]:
                 for smoother in [
                         None,
@@ -52,7 +52,7 @@ def survey():
                         O("TriBlobSmoother", use_max=True),
                         ]:
                     for sensor in [
-                            "persson_peraire",
+                            #"persson_peraire",
                             "decay_gating",
                             "decay_gating skyline",
                             "decay_gating averaging",
@@ -74,6 +74,7 @@ def survey():
                             "order = %d" % order,
                             "n_elements = %d" % n_elements,
                             "smoother = %s" % smoother,
+                            "vis_interval = 5",
                             "case = %s" % case,
                             "sensor = %r" % sensor,
                             ])
