@@ -53,7 +53,7 @@ def main():
     # timestep setup ----------------------------------------------------------
     stepper = RK4TimeStepper()
 
-    dt = discr.dt_factor(vlasov_op.max_eigenvalue()) * setup.dt_scale
+    dt = discr.dt_factor(vlasov_op.max_eigenvalue(fields)) * setup.dt_scale
     nsteps = int(setup.final_time/dt)
 
     print "%d elements, dt=%g, nsteps=%d" % (

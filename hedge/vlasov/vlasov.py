@@ -70,8 +70,9 @@ class AdvectionOperator:
 
     def flux(self):
         from hedge.flux import \
-                make_normal, FluxScalarPlaceholder, IfPositive, \
+                make_normal, FluxScalarPlaceholder, \
                 FluxScalarParameter
+        from pymbolic.primitives import IfPositive
 
         from hedge.tools import make_obj_array
         v = make_obj_array([
@@ -90,7 +91,7 @@ class AdvectionOperator:
         return u.int * numpy.dot(normal, v) - weak_flux
 
     def op_template(self):
-        from hedge.optemplate import Field, pair_with_boundary, \
+        from hedge.optemplate import Field, BoundaryPair, \
                 get_flux_operator, make_nabla, InverseMassOperator, \
                 ScalarParameter
 
@@ -123,7 +124,6 @@ class AdvectionOperator:
 class VlasovOperatorBase:
     def __init__(self, x_discr, p_discrs, units, species_mass,
             use_fft=False):
-        from p_discr import MomentumDiscretization
         self.x_discr = x_discr
         self.p_discrs = p_discrs
         self.units = units
@@ -135,6 +135,14 @@ class VlasovOperatorBase:
 
         self.advection_op = AdvectionOperator(x_discr.dimensions)
         self.bound_advection_op= self.advection_op.bind(x_discr)
+
+
+    @memoize_method
+    def get_lin_combiner(self, scalar_dtype, vec_dtype, shape, arg_count):
+        from hedge.tools.linear_combination import NumpyLinearCombiner
+        return NumpyLinearCombiner(
+                scalar_dtype, scalar_dtype, 
+                numpy.zeros(shape, dtype=vec_dtype), arg_count)
 
     @property
     def v_points(self):
@@ -168,7 +176,7 @@ class VlasovOperatorBase:
                 + self.p_grid.shape[axis+1:])
 
         from pytools import indices_in_shape
-        from hedge.tools import numpy_linear_comb, make_obj_array
+        from pytools.obj_array import make_obj_array
 
         for idx_tuple in indices_in_shape(remaining_shape):
             this_slice = (
@@ -192,7 +200,6 @@ class VlasovOperatorBase:
         #else:
 
         from pytools import indices_in_shape
-        from hedge.tools import numpy_linear_comb
 
         for idx_tuple in indices_in_shape(remaining_shape):
             this_slice = (
@@ -201,8 +208,11 @@ class VlasovOperatorBase:
                     + idx_tuple[axis:])
 
             for row_idx in range(self.p_discrs[axis].grid_size):
-                lc = numpy_linear_comb(
-                        zip(matrix[row_idx], f_ary[this_slice]))
+                linear_combiner = self.get_lin_combiner(
+                        matrix.dtype,
+                        (len(self.x_discr),),
+                        matrix.shape[1])
+                lc = linear_combiner(*zip(matrix[row_idx], f_ary[this_slice]))
                 dest_idx = (
                         idx_tuple[:axis] 
                         + (row_idx,)
@@ -260,7 +270,7 @@ class VlasovOperatorBase:
                 lambda p_discr: p_discr.apply_filter,
                 densities)
 
-    def max_eigenvalue(self):
+    def max_eigenvalue(self, field):
         return max(la.norm(v) for v in self.v_points)
 
     def integral_dp(self, values):
@@ -415,10 +425,11 @@ class VlasovMaxwellOperator(VlasovOperatorBase):
         densities = fields[self.maxwell_field_count:]
         return e, h, densities
 
-    def max_eigenvalue(self):
+    def max_eigenvalue(self, fields):
+        max_w = fields[:self.maxwell_field_count]
         return max(
                 max(la.norm(v) for v in self.v_points),
-                self.maxwell_op.max_eigenvalue())
+                self.maxwell_op.max_eigenvalue(max_w))
 
 
 
