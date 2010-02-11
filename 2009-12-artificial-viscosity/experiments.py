@@ -56,7 +56,7 @@ def survey():
                             "decay_gating",
                             "decay_gating skyline",
                             "decay_gating averaging",
-                            "decay_gating fit_correction",
+                            #"decay_gating fit_correction",
                             ]:
                         job = BatchJob(
                                 "burgers-$DATE/N%d-K%d-%s-sm%s-%s" % (

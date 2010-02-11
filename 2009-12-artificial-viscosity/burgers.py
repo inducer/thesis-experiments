@@ -72,51 +72,17 @@ class OffCenterStationaryTestCase(object):
 
 
 
-def make_ui():
-    from smoother import TriBlobSmoother
-
-    variables = {
-        "vis_interval": 2,
-        "vis_interval_steps": 0,
-
-        "order": 4,
-        "vis_order": None,
-        "quad_min_degree": None,
-
-        "n_elements": 20,
-        #"case": CenteredStationaryTestCase(),
-        #"case": OffCenterStationaryTestCase(),
-        #"case": OffCenterMigratingTestCase(),
-        "case": LeaningTriangleTestCase(),
-        "smoother": TriBlobSmoother(use_max=False),
-        "sensor": "decay_gating skyline",
-
-        "extra_vis": False,
-        }
-
-    constants = {
-            }
-    for cl in [
-            CenteredStationaryTestCase,
-            OffCenterStationaryTestCase,
-            OffCenterMigratingTestCase,
-            LeaningTriangleTestCase,
-            TriBlobSmoother,
-            ]:
-        constants[cl.__name__] = cl
-
-    from pytools import CPyUserInterface
-    return CPyUserInterface(variables, constants)
-
-
-
-
 def main(flux_type_arg="upwind"):
-
     from hedge.backends import guess_run_context
     rcon = guess_run_context()
 
-    ui = make_ui()
+    from avcommon import make_ui
+    ui = make_ui(cases=[
+            LeaningTriangleTestCase,
+            CenteredStationaryTestCase,
+            OffCenterStationaryTestCase,
+            OffCenterMigratingTestCase,
+            ])
     setup = ui.gather()
 
     if rcon.is_head_rank:
@@ -174,7 +140,7 @@ def main(flux_type_arg="upwind"):
             CentralSecondDerivative)
     from hedge.models.burgers import BurgersOperator
     op = BurgersOperator(mesh.dimensions,
-            viscosity_scheme=IPDGSecondDerivative(stab_coefficient=10))
+            viscosity_scheme=IPDGSecondDerivative(stab_coefficient=setup.stab_coefficient))
 
     if rcon.is_head_rank:
         print "%d elements" % len(discr.mesh.elements)
@@ -215,6 +181,10 @@ def main(flux_type_arg="upwind"):
                     names=["total_variation", "tv_change", "tv_vs_min"])
             self.last_tv = None
             self.min_tv = None
+
+            if discr is vis_discr:
+                from warnings import warn
+                warn("Total variation results are likely inaccurate.")
 
         def __call__(self):
             hires_u = vis_proj(u)
@@ -257,80 +227,8 @@ def main(flux_type_arg="upwind"):
     logmgr.add_watches(["step.max", "t_sim.max", "l1_u", "t_step.max"])
 
     # timestep loop -----------------------------------------------------------
-    mesh_a, mesh_b = mesh.bounding_box()
-    from pytools import product
-    area = product(mesh_b[i] - mesh_a[i] for i in range(mesh.dimensions))
-    h = sqrt(area/len(mesh.elements))
-
-    sensor_words = setup.sensor.split()
-    if sensor_words[0] == "decay_gating":
-        from hedge.bad_cell import (DecayGatingDiscontinuitySensorBase,
-                SkylineModeProcessor, AveragingModeProcessor)
-
-        correct_for_fit_error = False
-        mode_processor = None
-        ignored_modes = 1
-        weight_exponent = 0
-
-        sensor_words.pop(0)
-
-        if "fit_correction" in sensor_words:
-            sensor_words.remove("fit_correction")
-            correct_for_fit_error = True
-
-        for i, sw in enumerate(sensor_words):
-            if sw.startswith("weight_exponent="):
-                sensor_words.pop(i)
-                weight_exponent = float(sw.split("=")[1])
-                ignored_modes = 0
-                break
-
-        if "skyline" in sensor_words:
-            sensor_words.remove("skyline")
-            mode_processor = SkylineModeProcessor()
-        elif "averaging" in sensor_words:
-            sensor_words.remove("averaging")
-            mode_processor = AveragingModeProcessor()
-
-        if sensor_words:
-            raise RuntimeError("didn't understand sensor spec: %s" % ",".join(sensor_words))
-
-        sensor = DecayGatingDiscontinuitySensorBase(
-                mode_processor=mode_processor,
-                weight_exponent=weight_exponent,
-                ignored_modes=ignored_modes,
-                correct_for_fit_error=correct_for_fit_error,
-                max_viscosity=5*h/setup.order)
-
-        decay_expt = sensor.bind_quantity(discr, "decay_expt")
-        decay_lmc = sensor.bind_quantity(discr, "log_modal_coeffs")
-        decay_wlmc = sensor.bind_quantity(discr, "weighted_log_modal_coeffs")
-        decay_estimated_lmc = sensor.bind_quantity(discr, "estimated_log_modal_coeffs")
-        jump_part = sensor.bind_quantity(discr, "jump_part")
-        jump_modes = sensor.bind_quantity(discr, "modal_coeffs_jump")
-        jump_lmc = sensor.bind_quantity(discr, "log_modal_coeffs_jump")
-
-        def get_extra_vis_vectors(u):
-            return [
-                ("expt_u_dg", vis_proj(decay_expt(u))), 
-                ("jump_part", vis_proj(jump_part(u))), 
-                ("jump_modes", vis_proj(jump_modes(u))), 
-                ("lmc_u_dg", vis_proj(decay_lmc(u))), 
-                ("w_lmc_u_dg", vis_proj(decay_wlmc(u))), 
-                ("lmc_u_dg_jump", vis_proj(jump_lmc(u))), 
-                ("est_lmc_u_dg", vis_proj(decay_estimated_lmc(u))), 
-                ]
-
-    elif sensor_words[0] == "persson_peraire":
-        from hedge.bad_cell import PerssonPeraireDiscontinuitySensor
-        sensor = PerssonPeraireDiscontinuitySensor(kappa=2,
-            eps0=h/setup.order, s_0=numpy.log10(1/setup.order**4))
-
-        def get_extra_vis_vectors(u):
-            return []
-
-    else:
-        raise RuntimeError("invalid sensor")
+    from avcommon import sensor_from_string
+    sensor, extra_vis_vector = sensor_from_string(setup.sensor, discr, setup, vis_proj)
 
     bound_sensor = sensor.bind(discr)
 
