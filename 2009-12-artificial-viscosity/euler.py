@@ -1,36 +1,58 @@
 from __future__ import division
-import numpy
 import numpy.linalg as la
-from math import sin, pi, sqrt
 from pytools.obj_array import make_obj_array
 
 
 
 
 class SodTestCase(object):
-    a = 0
-    b = 1
     final_time = 0.25
-    gamma = 1.4
 
-    def make_initial_func(self, dim):
+    def __init__(self, **kwargs):
+        from sod import SodProblem
+        self.sod = SodProblem(**kwargs)
+
+    def make_exact_func(self, t):
+        if t == 0:
+            return self.make_initial_func()
+        else:
+            data = self.sod.get_data_for_time(t)
+
+            def f(x, el):
+                return data(x)
+
+            f.shape = self.sod.shape
+
+            return f
+
+    def make_initial_func(self):
         def e_from_p(p):
             # neglects a velocity term which is 0 for the Sod IC
             return p / (self.gamma - 1)
 
-        class SodFunction:
-            shape = (2+dim,)
+        s = self.sod
 
-            def __call__(subself, x, el):
-                if x[0] <= (self.a+self.b)/2:
-                    return [1, e_from_p(1)] + [0]*dim
-                else:
-                    return [0.125, e_from_p(0.1)] + [0]*dim
+        def f(x, el):
+            if x[0] <= (self.a+self.b)/2:
+                return [s.rho_l, e_from_p(s.p_l)] + [0]*s.dim
+            else:
+                return [s.rho_r, e_from_p(s.p_r)] + [0]*s.dim
 
-        return SodFunction()
+        f.shape = self.sod.shape
 
-    def make_exact_func(self, dim):
-        pass
+        return f
+
+    @property
+    def gamma(self):
+        return self.sod.gamma
+
+    @property
+    def a(self):
+        return self.sod.xl
+
+    @property
+    def b(self):
+        return self.sod.xr
 
 
 
@@ -145,7 +167,7 @@ def main(flux_type_arg="upwind"):
     import pymbolic
     var = pymbolic.var
 
-    initial_func = setup.case.make_initial_func(discr.dimensions)
+    initial_func = setup.case.make_initial_func()
     fields = make_obj_array(
             discr.interpolate_volume_function(initial_func))
 
@@ -248,47 +270,46 @@ def main(flux_type_arg="upwind"):
 
     # }}}
 
-    # {{{ pre-smudge loop -----------------------------------------------------
-
-    # }}}
-
     # {{{ vis subroutine ------------------------------------------------------
     def visualize(name, t, fields):
-        if hasattr(setup.case, "u_exact"):
-            extra_fields = [
-                    ("u_exact", 
-                        vis_discr.interpolate_volume_function(
-                            lambda x, el: setup.case.u_exact(x[0], t)))]
+        def to_vis(f):
+            return vis_proj(discr.convert_volume(f, kind="numpy"))
+
+        def vis_tuples(q, suffix=""):
+            rho = op.rho(q)
+            e = op.e(q)
+            rho_u = op.rho_u(q)
+            u = op.u(q)
+
+            from hedge.tools import ptwise_dot
+            p = (op.gamma-1)*(e-0.5*ptwise_dot(1, 1, rho_u, u))
+
+            return [
+                    ("rho"+suffix, to_vis(rho)),
+                    ("e"+suffix, to_vis(e)),
+                    ("rho_u"+suffix, to_vis(rho_u)),
+                    ("u"+suffix, to_vis(u)),
+                    ("p"+suffix, to_vis(p)) ]
+
+        if hasattr(setup.case, "make_exact_func"):
+            exact_func = setup.case.make_exact_func(t)
+            exact_fields = vis_discr.interpolate_volume_function(
+                        exact_func)
+
+            extra_fields = vis_tuples(
+                    make_obj_array(exact_fields), "_exact")
         else:
             extra_fields = []
 
         if setup.extra_vis:
             extra_fields.extend(get_extra_vis_vectors(fields[0]))
 
-        def to_vis(f):
-            return vis_proj(discr.convert_volume(f, kind="numpy"))
-
         visf = vis.make_file(name)
 
-        rho = op.rho(fields)
-        e = op.e(fields)
-        rho_u = op.rho_u(fields)
-        u = op.u(fields)
-
-        from hedge.tools import ptwise_dot
-        p = (op.gamma-1)*(e-0.5*ptwise_dot(1, 1, rho_u, u))
-
         vis.add_data(visf,
-                [
-                    ("rho", to_vis(rho)),
-                    ("e", to_vis(e)),
-                    ("rho_u", to_vis(rho_u)),
-                    ("u", to_vis(u)),
-                    ("p", to_vis(p)),
-                    ("sensor", to_vis(bound_sensor(fields))), 
-                ] + extra_fields,
-                expressions=[
-                    ],
+                vis_tuples(fields)
+                + [ ("sensor", to_vis(bound_sensor(fields))) ] 
+                + extra_fields,
                 time=t, step=step)
 
         visf.close()
