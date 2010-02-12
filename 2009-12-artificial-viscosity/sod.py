@@ -166,12 +166,11 @@ class SodProblem:
                 ux = u4 + u3 * ( xx - xhead ) / ( xtail - xhead )
                 px = p4 * ( 1.0 - 0.5 * gm1 * ( ux / a4 ) )**( 2.0 * gam / gm1 )
                 rx = r4 * ( 1.0 - 0.5 * gm1 * ( ux / a4 ) )**( 2.0 / gm1 )
-                rm = ux / sqrt( gam * px / rx )
 
                 abscissae.append(xx)
                 p_arr.append(px)
                 rho_arr.append(rx)
-                u_arr.append(px)
+                u_arr.append(ux)
 
             abscissae.extend( [xtail, xc, xc, xs, xs, xr])
             p_arr.extend(     [p3,    p3, p2, p2, p1, p1])
