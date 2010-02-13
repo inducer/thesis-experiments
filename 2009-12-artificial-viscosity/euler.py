@@ -1,5 +1,7 @@
-from __future__ import division
+from __future__ import division, with_statement
+import numpy
 import numpy.linalg as la
+import pylo
 from pytools.obj_array import make_obj_array
 
 
@@ -148,8 +150,8 @@ def main(flux_type_arg="upwind"):
     discr = rcon.make_discretization(mesh_data, order=setup.order,
             quad_min_degrees=quad_min_degrees,
             debug=[
-            "dump_optemplate_stages",
-            "dump_op_code"
+            #"dump_optemplate_stages",
+            #"dump_op_code"
             ]
             )
     if setup.vis_order is not None and setup.vis_order != setup.order:
@@ -251,7 +253,10 @@ def main(flux_type_arg="upwind"):
             result = bound_smoother(pre_smoother_bound_sensor(rho))
             return result
 
-    bound_op = op.bind(discr, sensor=bound_sensor)
+    bound_op = op.bind(discr, sensor=bound_sensor,
+            #sensor_mode="blended",
+            #sensor_scaling=sensor.max_viscosity
+            )
 
     max_eigval = [0]
     dbg_step = [0]
@@ -271,6 +276,9 @@ def main(flux_type_arg="upwind"):
     # }}}
 
     # {{{ vis subroutine ------------------------------------------------------
+    vis_times = []
+    vis_arrays = {}
+
     def visualize(name, t, fields):
         def to_vis(f):
             return vis_proj(discr.convert_volume(f, kind="numpy"))
@@ -293,7 +301,7 @@ def main(flux_type_arg="upwind"):
 
         if hasattr(setup.case, "make_exact_func"):
             exact_func = setup.case.make_exact_func(t)
-            exact_fields = vis_discr.interpolate_volume_function(
+            exact_fields = discr.interpolate_volume_function(
                         exact_func)
 
             extra_fields = vis_tuples(
@@ -304,15 +312,27 @@ def main(flux_type_arg="upwind"):
         if setup.extra_vis:
             extra_fields.extend(get_extra_vis_vectors(fields[0]))
 
-        visf = vis.make_file(name)
-
-        vis.add_data(visf,
+        vis_fields = (
                 vis_tuples(fields)
                 + [ ("sensor", to_vis(bound_sensor(fields))) ] 
-                + extra_fields,
-                time=t, step=step)
+                + extra_fields)
 
+        visf = vis.make_file(name)
+        vis.add_data(visf, vis_fields, time=t, step=step)
         visf.close()
+
+        # {{{ save vis data for quad plot
+        from pytools.obj_array import is_obj_array
+
+        if discr.dimensions == 1:
+            vis_times.append(t)
+            for name, data in vis_fields:
+                if len(data.shape) > 1:
+                    data = data[0]
+                vis_arrays.setdefault(name, []).append(data)
+        # }}}
+
+
 
     # }}}
 
@@ -361,7 +381,24 @@ def main(flux_type_arg="upwind"):
         vis.close()
         logmgr.close()
 
+        # {{{ write out quad plot
+        if vis_discr.dimensions == 1 and vis_times:
+            with pylo.SiloFile("xtmesh.silo", mode=pylo.DB_CLOBBER) as f:
+                f.put_quadmesh("xtmesh", [
+                    vis_discr.nodes[:,0].copy(),
+                    numpy.array(vis_times)*10
+                    ])
+
+                for name, data in vis_arrays.iteritems():
+                    ary_data = numpy.asarray(data)
+                    f.put_quadvar1(name, "xtmesh",
+                            ary_data, ary_data.shape,
+                            centering=pylo.DB_NODECENT)
+
+        # }}}
+
     # }}}
+
 
 
 
