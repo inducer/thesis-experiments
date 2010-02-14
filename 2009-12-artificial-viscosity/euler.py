@@ -99,7 +99,7 @@ class ShuOsherProblem(object):
     a = -2
     b = 2
     gamma = 5/3
-    final_time = 5
+    final_time = 0.85
 
     def __init__(self, dim=1):
         self.dim = dim
