@@ -1,13 +1,12 @@
 from __future__ import division, with_statement
 import numpy
 import numpy.linalg as la
-import pylo
 from pytools.obj_array import make_obj_array
 
 
 
 
-class SodTestCase(object):
+class SodProblem(object):
     final_time = 0.25
 
     def __init__(self, **kwargs):
@@ -58,6 +57,80 @@ class SodTestCase(object):
 
 
 
+
+class LaxProblem(object):
+    # http://www.crs4.it/HTML/int_book/NumericalMethods/subsection3_3_1.html
+    a = 0
+    b = 4
+    gamma = 1.4
+    final_time = 0.17*b
+
+    def __init__(self, dim=1):
+        self.dim = dim
+
+    def make_initial_func(self):
+        def e_from_p(p, u, rho):
+            return p / (self.gamma-1) + rho / 2 * u**2
+
+
+        def f(x, el):
+            if x[0] <= (self.a+self.b)/2:
+                rho_l = .445
+                p_l = 3.528
+                u_l = .698
+
+                return [rho_l, e_from_p(p_l, u_l, rho_l), rho_l*u_l] + [0]*(self.dim-1)
+            else:
+                rho_r = .5
+                p_r = .571
+                u_r = 0
+
+                return [rho_r, e_from_p(p_r, u_r, rho_r), rho_r*u_r] + [0]*(self.dim-1)
+
+        f.shape = (2+self.dim,)
+
+        return f
+
+
+
+
+class ShuOsherProblem(object):
+    # http://www.astro.princeton.edu/~jstone/tests/shu-osher/Shu-Osher.html
+    a = -2
+    b = 2
+    gamma = 5/3
+    final_time = 5
+
+    def __init__(self, dim=1):
+        self.dim = dim
+
+    def make_initial_func(self):
+        def e_from_p(p, u, rho):
+            return p / (self.gamma-1) + rho / 2 * u**2
+
+        from math import sin, pi
+
+        def f(x, el):
+            if x[0] <= self.a+(self.b-self.a)*0.125:
+                rho_l = 3.857143
+                p_l = 10.33333
+                u_l = 2.629369
+
+                return [rho_l, e_from_p(p_l, u_l, rho_l), rho_l*u_l] + [0]*(self.dim-1)
+            else:
+                rho_r = 1 + 0.2*sin(5*pi*x[0])
+                p_r = 1
+                u_r = 0
+
+                return [rho_r, e_from_p(p_r, u_r, rho_r), rho_r*u_r] + [0]*(self.dim-1)
+
+        f.shape = (2+self.dim,)
+
+        return f
+
+
+
+
 def make_stepper():
     #from hedge.timestep import RK4TimeStepper
     from hedge.timestep.dumka3 import Dumka3TimeStepper
@@ -105,7 +178,9 @@ def main(flux_type_arg="upwind"):
 
     from avcommon import make_ui
     ui = make_ui(cases=[
-        SodTestCase
+        SodProblem,
+        LaxProblem,
+        ShuOsherProblem,
         ])
     setup = ui.gather()
 
