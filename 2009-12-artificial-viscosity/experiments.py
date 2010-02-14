@@ -34,7 +34,7 @@ def cn_with_args(placeholder):
     return result
 
 
-def survey():
+def burgers_survey():
     O = ConstructorPlaceholder
 
     timestamp = get_timestamp()
@@ -83,6 +83,31 @@ def survey():
                         #raw_input()
 
 
+
+
+def euler_sod_convergence():
+    timestamp = get_timestamp()
+
+    for order in [3, 4, 5, 10]:
+        for n_elements in [20, 40]:
+            for viscosity_scale in [0.1, 0.2, 0.4, 0.8]:
+                job = BatchJob(
+                        "euler-$DATE/N%d-K%d-v%f" % (
+                            order,
+                            n_elements,
+                            viscoscity_scale),
+                        "euler.py",
+                        timestamp=timestamp,
+                        aux_files=["smoother.py", "avcommon.py", "sod.py"])
+
+                job.write_setup([
+                    "order = %d" % order,
+                    "n_elements = %d" % n_elements,
+                    "viscoscity_scale = %r" % viscosity_scale,
+                    "vis_interval = 0.05",
+                    "case = SodProblem()",
+                    ])
+                job.submit()
 
 
 
