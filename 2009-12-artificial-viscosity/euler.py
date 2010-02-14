@@ -282,12 +282,13 @@ def main(flux_type_arg="upwind"):
     if rcon.is_head_rank:
         print "%d elements" % len(discr.mesh.elements)
 
-    # diagnostics setup -------------------------------------------------------
+    # {{{ diagnostics setup ---------------------------------------------------
     from pytools.log import (LogManager,
             add_general_quantities,
             add_simulation_quantities,
             add_run_info,
-            EventCounter)
+            MultiPostLogQuantity, EventCounter,
+            DtConsumer)
 
     log_file_name = "euler.dat"
 
@@ -311,6 +312,34 @@ def main(flux_type_arg="upwind"):
     logmgr.add_quantity(rhs_counter)
 
     logmgr.add_watches(["step.max", "t_sim.max", "l1_u", "t_step.max"])
+
+    # {{{ L2 error diagnostic
+
+    class L2Error(MultiPostLogQuantity, DtConsumer):
+        def __init__(self):
+            MultiPostLogQuantity.__init__(self, 
+                    names=["l2_err_rho", "l2_err_e", "l2_err_rho_u"])
+            self.t = 0
+
+        def __call__(self):
+            exact_func = setup.case.make_exact_func(self.t)
+            exact_fields = make_obj_array(
+                    discr.interpolate_volume_function(exact_func))
+
+            self.t += self.dt
+            return [
+                    discr.norm(op.rho(fields)-op.rho(exact_fields)),
+                    discr.norm(op.e(fields)-op.e(exact_fields)),
+                    discr.norm(op.rho_u(fields)-op.rho_u(exact_fields)),
+                    ]
+
+    if hasattr(setup.case, "make_exact_func"):
+        error_quantity = L2Error()
+        logmgr.add_quantity(error_quantity, interval=10)
+
+    # }}}
+
+    # }}}
 
     # {{{ timestep loop -----------------------------------------------------------
     from avcommon import sensor_from_string
@@ -400,11 +429,11 @@ def main(flux_type_arg="upwind"):
         from pytools.obj_array import is_obj_array
 
         if discr.dimensions == 1:
-            vis_times.append(t)
             for name, data in vis_fields:
                 if len(data.shape) > 1:
                     data = data[0]
                 vis_arrays.setdefault(name, []).append(data)
+            vis_times.append(t)
         # }}}
 
 
@@ -458,10 +487,11 @@ def main(flux_type_arg="upwind"):
 
         # {{{ write out quad plot
         if vis_discr.dimensions == 1 and vis_times:
+            import pylo
             with pylo.SiloFile("xtmesh.silo", mode=pylo.DB_CLOBBER) as f:
                 f.put_quadmesh("xtmesh", [
                     vis_discr.nodes[:,0].copy(),
-                    numpy.array(vis_times)*10
+                    numpy.array(vis_times, dtype=numpy.float64)*10
                     ])
 
                 for name, data in vis_arrays.iteritems():
