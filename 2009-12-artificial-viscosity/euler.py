@@ -264,18 +264,16 @@ def main(flux_type_arg="upwind"):
             gamma=setup.case.gamma,
             mu=0,
 
-            bc_inflow=TimeConstantGivenFunction(
-                GivenFunction(initial_func)),
-            bc_outflow=TimeConstantGivenFunction(
-                GivenFunction(initial_func)),
-            bc_noslip=TimeConstantGivenFunction(
+            bc_supersonic_inflow=TimeConstantGivenFunction(
                 GivenFunction(initial_func)),
 
             second_order_scheme=IPDGSecondDerivative(
                 stab_coefficient=setup.stab_coefficient),
             #second_order_scheme=CentralSecondDerivative(),
 
-            inflow_tag=TAG_ALL,
+            supersonic_inflow_tag=TAG_ALL,
+            supersonic_outflow_tag=TAG_NONE,
+            inflow_tag=TAG_NONE,
             outflow_tag=TAG_NONE,
             noslip_tag=TAG_NONE)
 
