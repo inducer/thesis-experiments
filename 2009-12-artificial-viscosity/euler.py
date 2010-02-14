@@ -96,10 +96,10 @@ class LaxProblem(object):
 
 class ShuOsherProblem(object):
     # http://www.astro.princeton.edu/~jstone/tests/shu-osher/Shu-Osher.html
-    a = -2
-    b = 2
-    gamma = 5/3
-    final_time = 0.85
+    a = -5
+    b = 5
+    gamma = 1.4
+    final_time = 2
 
     def __init__(self, dim=1):
         self.dim = dim
@@ -111,14 +111,14 @@ class ShuOsherProblem(object):
         from math import sin, pi
 
         def f(x, el):
-            if x[0] <= self.a+(self.b-self.a)*0.125:
+            if x[0] <= -4:
                 rho_l = 3.857143
                 p_l = 10.33333
                 u_l = 2.629369
 
                 return [rho_l, e_from_p(p_l, u_l, rho_l), rho_l*u_l] + [0]*(self.dim-1)
             else:
-                rho_r = 1 + 0.2*sin(5*pi*x[0])
+                rho_r = 1 + 0.2*sin(5*x[0])
                 p_r = 1
                 u_r = 0
 
