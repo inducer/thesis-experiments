@@ -299,6 +299,7 @@ def main(flux_type_arg="upwind"):
     logmgr.set_constant("case_name", type(setup.case).__name__)
     logmgr.set_constant("sensor", setup.sensor)
     logmgr.set_constant("smoother", str(setup.smoother))
+    logmgr.set_constant("viscosity_scale", setup.viscosity_scale)
 
     from hedge.log import LpNorm
     def rho_getter():
