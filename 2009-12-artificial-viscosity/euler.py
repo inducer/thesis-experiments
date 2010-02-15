@@ -285,8 +285,8 @@ def main(flux_type_arg="upwind"):
             add_general_quantities,
             add_simulation_quantities,
             add_run_info,
-            MultiPostLogQuantity, EventCounter,
-            DtConsumer)
+            MultiLogQuantity, EventCounter,
+            DtConsumer, TimeTracker)
 
     log_file_name = "euler.dat"
 
@@ -313,18 +313,18 @@ def main(flux_type_arg="upwind"):
 
     # {{{ L2 error diagnostic
 
-    class L2Error(MultiPostLogQuantity, DtConsumer):
+    class L2Error(MultiLogQuantity, TimeTracker):
         def __init__(self):
-            MultiPostLogQuantity.__init__(self, 
+            MultiLogQuantity.__init__(self, 
                     names=["l2_err_rho", "l2_err_e", "l2_err_rho_u"])
-            self.t = 0
+            TimeTracker.__init__(self, None)
 
         def __call__(self):
+            print self.t
             exact_func = setup.case.make_exact_func(self.t)
             exact_fields = make_obj_array(
                     discr.interpolate_volume_function(exact_func))
 
-            self.t += self.dt
             return [
                     discr.norm(op.rho(fields)-op.rho(exact_fields)),
                     discr.norm(op.e(fields)-op.e(exact_fields)),
@@ -474,7 +474,7 @@ def main(flux_type_arg="upwind"):
                 do_vis = do_vis or (step % setup.vis_interval_steps == 0)
 
             if do_vis:
-                visualize("euler-%04d" % step, t, fields)
+                visualize("euler-%06d" % step, t, fields)
 
             fields, t, taken_dt, next_dt = stepper(fields, t, next_dt, rhs)
 
