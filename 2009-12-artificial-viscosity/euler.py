@@ -321,7 +321,6 @@ def main(flux_type_arg="upwind"):
             TimeTracker.__init__(self, None)
 
         def __call__(self):
-            print self.t
             exact_func = setup.case.make_exact_func(self.t)
             exact_fields = make_obj_array(
                     discr.interpolate_volume_function(exact_func))

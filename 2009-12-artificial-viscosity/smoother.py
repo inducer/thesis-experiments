@@ -267,7 +267,7 @@ class TriBlobSmoother(object):
         tgt_indices = numpy.array(indices, dtype=numpy.uint32)
         return siv, tgt_indices
 
-    def make_codepy_module(self, toolchain, dtype):
+    def make_codepy_module(self, toolchain, dtype, dimensions):
         from codepy.libraries import add_codepy
         toolchain = toolchain.copy()
         add_codepy(toolchain)
@@ -440,8 +440,6 @@ class VertexwiseMaxSmoother(object):
             for i, node in enumerate(ldis.unit_nodes()):
                 bary = ldis.unit_to_barycentric(node)
                 ramp[i] = bary[(vertex_nr-1)%(dim+1)]
-
-        print result
 
         return result
 

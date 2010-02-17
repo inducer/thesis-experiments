@@ -5,7 +5,7 @@ import numpy
 
 
 def make_ui(cases):
-    from smoother import TriBlobSmoother
+    from smoother import TriBlobSmoother, VertexwiseMaxSmoother
 
     variables = {
         "vis_interval": 2,
@@ -15,13 +15,13 @@ def make_ui(cases):
         "vis_order": None,
         "quad_min_degree": None,
 
-        "stab_coefficient": 10,
+        "stab_coefficient": 1,
 
         "n_elements": 20,
 
         "case": cases[0](),
 
-        "smoother": TriBlobSmoother(use_max=False),
+        "smoother": VertexwiseMaxSmoother(),
         "sensor": "decay_gating skyline",
 
         "viscosity_scale": 1,
@@ -32,7 +32,8 @@ def make_ui(cases):
     constants = {
             }
     for cl in cases + [
-            TriBlobSmoother
+            TriBlobSmoother,
+            VertexwiseMaxSmoother
             ]:
         constants[cl.__name__] = cl
 
@@ -56,7 +57,7 @@ def sensor_from_string(sensor_str, discr, setup, vis_proj):
         correct_for_fit_error = False
         mode_processor = None
         ignored_modes = 1
-        weight_exponent = 0
+        weight_mode = None
 
         sensor_words.pop(0)
 
@@ -68,8 +69,13 @@ def sensor_from_string(sensor_str, discr, setup, vis_proj):
             if sw.startswith("weight_exponent="):
                 sensor_words.pop(i)
                 weight_exponent = float(sw.split("=")[1])
+                weight_mode = ("exponential", weight_exponent)
                 ignored_modes = 0
                 break
+
+        if "nd_weight" in sensor_words:
+            sensor_words.remove("nd_weight")
+            weight_mode = "nd_weight"
 
         if "skyline" in sensor_words:
             sensor_words.remove("skyline")
@@ -83,7 +89,7 @@ def sensor_from_string(sensor_str, discr, setup, vis_proj):
 
         sensor = DecayGatingDiscontinuitySensorBase(
                 mode_processor=mode_processor,
-                weight_exponent=weight_exponent,
+                weight_mode=weight_mode,
                 ignored_modes=ignored_modes,
                 correct_for_fit_error=correct_for_fit_error,
                 max_viscosity=setup.viscosity_scale*h/setup.order)

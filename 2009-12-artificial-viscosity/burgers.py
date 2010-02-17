@@ -43,6 +43,22 @@ class LeaningTriangleTestCase(object):
 
         return max(f(x, shock_loc), f(x-self.b, shock_loc-self.b))
 
+class TimBump(object):
+    a = -1
+    b = 1
+    final_time = 10
+
+    def u0(self, x):
+        xc = .6;
+        if .25 < x <=xc:
+            return 1 + (x-.25)/(xc-.25)
+        elif xc < x <= .75:
+            return 1 + (xc-.25)*(.75-x)/((xc-.25)*(.75-xc))
+        else:
+            return 1
+
+
+
 class OffCenterMigratingTestCase(object):
     a = -pi
     b = pi
@@ -82,6 +98,7 @@ def main(flux_type_arg="upwind"):
             CenteredStationaryTestCase,
             OffCenterStationaryTestCase,
             OffCenterMigratingTestCase,
+            TimBump,
             ])
     setup = ui.gather()
 
@@ -90,9 +107,9 @@ def main(flux_type_arg="upwind"):
             from hedge.mesh.generator import make_uniform_1d_mesh
             mesh = make_uniform_1d_mesh(setup.case.a, setup.case.b, setup.n_elements, periodic=True)
         else:
-            extent_y = 4
-            dx = (setup.case.b-setup.case.a)/n_elements
-            subdiv = (n_elements, int(1+extent_y//dx))
+            extent_y = setup.case.b-setup.case.a
+            dx = (setup.case.b-setup.case.a)/setup.n_elements
+            subdiv = (setup.n_elements, int(1+extent_y//dx))
             from pytools import product
 
             from hedge.mesh.generator import make_rect_mesh
@@ -128,6 +145,7 @@ def main(flux_type_arg="upwind"):
 
     from hedge.visualization import SiloVisualizer
     vis = SiloVisualizer(vis_discr, rcon)
+    #vis = VtkVisualizer(vis_discr, rcon)
 
     # operator setup ----------------------------------------------------------
     from hedge.data import \
@@ -228,7 +246,7 @@ def main(flux_type_arg="upwind"):
 
     # timestep loop -----------------------------------------------------------
     from avcommon import sensor_from_string
-    sensor, extra_vis_vector = sensor_from_string(setup.sensor, discr, setup, vis_proj)
+    sensor, get_extra_vis_vectors = sensor_from_string(setup.sensor, discr, setup, vis_proj)
 
     bound_sensor = sensor.bind(discr)
 
