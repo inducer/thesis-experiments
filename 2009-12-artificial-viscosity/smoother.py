@@ -2,6 +2,7 @@ from __future__ import division
 
 import numpy
 import numpy.linalg as la
+from pytools import memoize_method
 
 
 
@@ -266,11 +267,10 @@ class TriBlobSmoother(object):
         tgt_indices = numpy.array(indices, dtype=numpy.uint32)
         return siv, tgt_indices
 
-    def make_codepy_module(self, toolchain, dtype, dimensions):
+    def make_codepy_module(self, toolchain, dtype):
         from codepy.libraries import add_codepy
         toolchain = toolchain.copy()
         add_codepy(toolchain)
-        toolchain.enable_debugging()
 
         from codepy.cgen import (Struct, Value, Include, Statement,
                 Typedef, FunctionBody, FunctionDeclaration, Block, Const,
@@ -421,6 +421,175 @@ class TriBlobSmoother(object):
                     result,
                     u,
                     self.scaling)
+
+            return result
+
+        return do
+
+
+
+
+class VertexwiseMaxSmoother(object):
+    @memoize_method
+    def make_per_vertex_linear_ramps(self, ldis):
+        result = []
+        dim = ldis.dimensions
+        for vertex_nr in range(dim+1):
+            ramp = numpy.zeros(ldis.node_count(), dtype=numpy.float64)
+            result.append(ramp)
+            for i, node in enumerate(ldis.unit_nodes()):
+                bary = ldis.unit_to_barycentric(node)
+                ramp[i] = bary[(vertex_nr-1)%(dim+1)]
+
+        print result
+
+        return result
+
+    @memoize_method
+    def make_vertex_neighbor_list(self, discr, eg):
+        vertex_to_el_and_index = {}
+        for el in eg.members:
+            for i, vi in enumerate(el.vertex_indices):
+                vertex_to_el_and_index.setdefault(vi, []).append(
+                        (el, i))
+
+        ldis = eg.local_discretization
+        el_vertex_node_indices = ldis.vertex_indices()
+
+        # for each vertex: a list of vertex_dof, el_base, el_vertex_index
+        vertex_starts = [0]
+        triple_list = []
+        for vertex_nr, els_and_indices in vertex_to_el_and_index.iteritems():
+            for el, el_vertex_index in els_and_indices:
+                el_base = discr.find_el_range(el.id).start
+                triple_list.extend([
+                        el_base+el_vertex_node_indices[el_vertex_index],
+                        el_base,
+                        el_vertex_index])
+
+            vertex_starts.append(len(triple_list))
+
+        return (numpy.array(vertex_starts, dtype=numpy.uint32),
+                numpy.array(triple_list, dtype=numpy.uint32))
+
+    def make_codepy_module(self, toolchain, dtype):
+        from codepy.cgen import (Value, Include,
+                Typedef, FunctionBody, FunctionDeclaration, Const,
+                Reference, Line, POD, LiteralBlock, Statement)
+
+        S = Statement
+
+        from codepy.bpl import BoostPythonModule
+        mod = BoostPythonModule()
+
+        mod.add_to_preamble([
+            Include("vector"),
+            Include("hedge/base.hpp"),
+            Include("boost/foreach.hpp"),
+            Include("codepy/bpl.hpp"),
+            ])
+
+        mod.add_to_module([
+            S("namespace ublas = boost::numeric::ublas"),
+            S("using namespace hedge"),
+            S("using namespace pyublas"),
+            Line(),
+            Typedef(POD(dtype, "value_type")),
+            Line(),
+            ])
+
+        mod.add_function(FunctionBody(
+            FunctionDeclaration(Value("void", "compose_smoother"), [
+                Const(Value("numpy_array<npy_uint32>", "vertex_starts")),
+                Const(Value("numpy_array<npy_uint32>", "triple_list")),
+                Value("boost::python::list", "py_ramps"),
+                Value("numpy_array<value_type>", "result"),
+                Const(Value("numpy_array<value_type>", "unsmoothed")),
+                ]),
+            LiteralBlock("""
+                typedef numpy_array<value_type>::iterator it_type;
+                typedef numpy_array<value_type>::const_iterator cit_type;
+                typedef numpy_array<npy_uint32>::const_iterator idx_it_type;
+
+                it_type result_it = result.begin();
+                idx_it_type first_vertex_starts = vertex_starts.begin();
+                idx_it_type last_vertex_starts = vertex_starts.end();
+                idx_it_type triple_list_it = triple_list.begin();
+                cit_type unsmoothed_it = unsmoothed.begin();
+
+                std::vector<cit_type> ramps;
+
+                npy_uint32 el_size = 0 /* initial value unused */;
+                CODEPY_PYTHON_FOREACH(numpy_array<value_type>,
+                    ramp, py_ramps)
+                {
+                  ramps.push_back(ramp.begin());
+                  el_size = ramp.size();
+                }
+
+                while (first_vertex_starts+1 != last_vertex_starts)
+                {
+                  idx_it_type vertex_start = triple_list_it 
+                    + *first_vertex_starts++;
+                  idx_it_type vertex_end = triple_list_it 
+                    + *first_vertex_starts;
+
+                  bool first = true;
+                  value_type vertex_value = 0/* initial value unused */;
+
+                  idx_it_type my_vertex_start = vertex_start;
+                  while (my_vertex_start != vertex_end)
+                  {
+                    value_type my_vertex_value = 
+                      unsmoothed_it[my_vertex_start[0]];
+
+                    if (first)
+                    {
+                      vertex_value = my_vertex_value;
+                      first = false;
+                    }
+                    else
+                      vertex_value = std::max(vertex_value, my_vertex_value);
+                    my_vertex_start += 3;
+                  }
+
+                  while (vertex_start != vertex_end)
+                  {
+                    npy_uint32 el_base = vertex_start[1];
+                    cit_type ramp = ramps[vertex_start[2]];
+
+                    for (npy_uint i = 0; i < el_size; ++i)
+                      result_it[el_base+i] += vertex_value*ramp[i];
+
+                    vertex_start += 3;
+                  }
+                }
+                """)))
+
+        toolchain = toolchain.copy()
+        toolchain.enable_debugging()
+
+        from codepy.libraries import add_codepy
+        add_codepy(toolchain)
+
+        return mod.compile(toolchain)
+
+    def bind(self, discr):
+        mod = self.make_codepy_module(
+                discr.toolchain, discr.default_scalar_type)
+
+        def do(u):
+            result = discr.volume_zeros(dtype=u.dtype)
+
+            for eg in discr.element_groups:
+                ldis = eg.local_discretization
+                ramps = self.make_per_vertex_linear_ramps(ldis)
+                vertex_starts, triple_list = self.make_vertex_neighbor_list(discr, eg)
+
+                mod.compose_smoother(
+                        vertex_starts, triple_list, ramps,
+                        result,
+                        u)
 
             return result
 

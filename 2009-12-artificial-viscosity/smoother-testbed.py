@@ -1,10 +1,10 @@
-from smoother import TemplatedSmoother, TriBlobSmoother, ramp_bruno, ramp_sin
+from smoother import *
 
 
 
 
 def make_mesh():
-    if False:
+    if True:
         from hedge.mesh.generator import make_disk_mesh
         return make_disk_mesh(r=0.5, max_area=1e-2)
     elif False:
@@ -73,8 +73,11 @@ def main():
             laplace_result = bound_op(0, p1_accu)
             p1_accu += 0.3*la.norm(p1_accu)/la.norm(laplace_result)*laplace_result
         smoothed = up_proj(p1_accu)
+    elif True:
+        smoother = VertexwiseMaxSmoother().bind(discr)
+        smoothed = smoother(bumpy)
     else:
-        smoother = TriBlobSmoother(discr)
+        smoother = TriBlobSmoother().bind(discr)
         smoothed = smoother(bumpy)
 
     from hedge.tools.convergence import relative_error
