@@ -424,8 +424,6 @@ def main(flux_type_arg="upwind"):
         visf.close()
 
         # {{{ save vis data for quad plot
-        from pytools.obj_array import is_obj_array
-
         if discr.dimensions == 1:
             for name, data in vis_fields:
                 if len(data.shape) > 1:
@@ -433,8 +431,6 @@ def main(flux_type_arg="upwind"):
                 vis_arrays.setdefault(name, []).append(data)
             vis_times.append(t)
         # }}}
-
-
 
     # }}}
 
@@ -499,7 +495,6 @@ def main(flux_type_arg="upwind"):
                             centering=pylo.DB_NODECENT)
 
         # }}}
-
     # }}}
 
 

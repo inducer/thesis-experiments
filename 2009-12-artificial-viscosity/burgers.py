@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import division, with_statement
 import numpy
 import numpy.linalg as la
 from math import sin, pi, sqrt
@@ -113,6 +113,7 @@ def main(flux_type_arg="upwind"):
             OffCenterStationaryTestCase,
             OffCenterMigratingTestCase,
             TimBump,
+            TimSine,
             ])
     setup = ui.gather()
 
@@ -183,7 +184,7 @@ def main(flux_type_arg="upwind"):
 
     u = discr.interpolate_volume_function(lambda x, el: setup.case.u0(x[0]))
 
-    # diagnostics setup -------------------------------------------------------
+    # {{{ diagnostics setup ---------------------------------------------------
     from pytools.log import (LogManager,
             add_general_quantities,
             add_simulation_quantities,
@@ -257,19 +258,33 @@ def main(flux_type_arg="upwind"):
         logmgr.add_quantity(error_quantity, interval=10)
 
     logmgr.add_watches(["step.max", "t_sim.max", "l1_u", "t_step.max"])
+    # }}}
 
-    # timestep loop -----------------------------------------------------------
+    # {{{ rhs setup -----------------------------------------------------------
     from avcommon import sensor_from_string
     sensor, get_extra_vis_vectors = sensor_from_string(setup.sensor, discr, setup, vis_proj)
 
-    bound_sensor = sensor.bind(discr)
+    pre_bound_sensor = sensor.bind(discr)
+    bound_characteristic_velocity = op.bind_characteristic_velocity(discr)
+
+    from hedge.bad_cell import make_h_over_n_vector
+    h_over_n = make_h_over_n_vector(discr)
+
+    def bound_sensor(u):
+        char_vel = bound_characteristic_velocity(u)
+
+        return pre_bound_sensor(u, 
+                viscosity_scaling=
+                setup.viscosity_scale*h_over_n
+                *char_vel)
 
     if setup.smoother is not None:
         bound_smoother = setup.smoother.bind(discr)
         pre_smoother_bound_sensor = bound_sensor
 
         def bound_sensor(u):
-            result = bound_smoother(pre_smoother_bound_sensor(u))
+            result = bound_smoother(
+                    pre_smoother_bound_sensor(u))
             return result
 
     bound_op = op.bind(discr, sensor=bound_sensor)
@@ -298,6 +313,50 @@ def main(flux_type_arg="upwind"):
 
         return bound_op(t, u)
 
+    # }}}
+
+    # {{{ vis subroutine ------------------------------------------------------
+    vis_times = []
+    vis_arrays = {}
+
+    def visualize(name, t, u):
+        def to_vis(f):
+            return vis_proj(discr.convert_volume(f, kind="numpy"))
+        vis_u = vis_proj(u)
+
+        if hasattr(setup.case, "u_exact"):
+            u_exact = vis_discr.interpolate_volume_function(
+                            lambda x, el: setup.case.u_exact(x[0], t))
+            extra_fields = [
+                    ("u_exact", u_exact),
+                    ("u_err", u_exact-vis_u)
+                    ]
+        else:
+            extra_fields = []
+
+        if setup.extra_vis:
+            extra_fields.extend(get_extra_vis_vectors(u))
+
+        vis_tuples = [ 
+            ("u_dg", vis_u), 
+            ("sensor", to_vis(bound_sensor(u))), 
+            ] + extra_fields
+
+        visf = vis.make_file(name)
+        vis.add_data(visf, vis_tuples, time=t, step=step)
+        visf.close()
+
+        # {{{ save vis data for quad plot
+        if discr.dimensions == 1:
+            for name, data in vis_tuples:
+                if len(data.shape) > 1:
+                    data = data[0]
+                vis_arrays.setdefault(name, []).append(data)
+            vis_times.append(t)
+        # }}}
+    # }}}
+
+    # {{{ timestep loop -------------------------------------------------------
     from hedge.timestep import RK4TimeStepper
     from hedge.timestep.dumka3 import Dumka3TimeStepper
     #stepper = RK4TimeStepper()
@@ -305,28 +364,7 @@ def main(flux_type_arg="upwind"):
     #stepper = Dumka3TimeStepper(4)
 
     stepper.add_instrumentation(logmgr)
-
-    def visualize(name, t, u):
-        if hasattr(setup.case, "u_exact"):
-            extra_fields = [
-                    ("u_exact", 
-                        vis_discr.interpolate_volume_function(
-                            lambda x, el: setup.case.u_exact(x[0], t)))]
-        else:
-            extra_fields = []
-
-        if setup.extra_vis:
-            extra_fields.extend(get_extra_vis_vectors(u))
-
-        visf = vis.make_file(name)
-        vis.add_data(visf, [ 
-            ("u_dg", vis_proj(u)), 
-            ("sensor", vis_proj(bound_sensor(u))), 
-            #("u_pp", vis_proj(u2)), 
-            ] + extra_fields,
-            time=t,
-            step=step)
-        visf.close()
+    
 
     next_vis_t = 0
     try:
@@ -364,12 +402,38 @@ def main(flux_type_arg="upwind"):
 
             u, t, taken_dt, next_dt = stepper(u, t, next_dt, rhs)
 
+        visualize("fld-%04d" % (step+1), setup.case.final_time, u)
     finally:
+        discr.close()
         vis.close()
         logmgr.close()
+
+        # {{{ write out quad plot
+        if vis_discr.dimensions == 1 and vis_times:
+            import pylo
+            with pylo.SiloFile("xtmesh.silo", mode=pylo.DB_CLOBBER) as f:
+                f.put_quadmesh("xtmesh", [
+                    vis_discr.nodes[:,0].copy(),
+                    numpy.array(vis_times, dtype=numpy.float64)*10
+                    ])
+
+                for name, data in vis_arrays.iteritems():
+                    ary_data = numpy.asarray(data)
+                    f.put_quadvar1(name, "xtmesh",
+                            ary_data, ary_data.shape,
+                            centering=pylo.DB_NODECENT)
+
+        # }}}
+
+    # }}}
 
 
 
 
 if __name__ == "__main__":
     main()
+
+
+
+
+# vim: foldmethod=marker

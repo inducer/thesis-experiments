@@ -91,8 +91,7 @@ def sensor_from_string(sensor_str, discr, setup, vis_proj):
                 mode_processor=mode_processor,
                 weight_mode=weight_mode,
                 ignored_modes=ignored_modes,
-                correct_for_fit_error=correct_for_fit_error,
-                max_viscosity=setup.viscosity_scale*h/setup.order)
+                correct_for_fit_error=correct_for_fit_error)
 
         decay_expt = sensor.bind_quantity(discr, "decay_expt")
         decay_lmc = sensor.bind_quantity(discr, "log_modal_coeffs")
