@@ -19,7 +19,8 @@ class SodData(Record):
             if xa[idx] == xa[idx-1]:
                 t = 0
             else:
-                t = (x-xa[idx-1])/(xa[idx]-xa[idx-1])
+                assert xa[idx-1] <= x <= xa[idx]
+                t = 1-(x-xa[idx-1])/(xa[idx]-xa[idx-1])
 
             def get(ary):
                 z = t*ary[idx-1] + (1-t)*ary[idx]
@@ -60,7 +61,7 @@ class SodProblem:
     """
     # (via Alan Schiemenz)
 
-    def __init__(self, p_l=1, p_r=0.1, rho_l=1, rho_r=0.125, 
+    def __init__(self, p_l=1, p_r=0.1, rho_l=1, rho_r=0.125,
             gamma=1.4, dim=1, xl=0, xr=1, tol=1e-5):
         self.p_l = p_l
         self.p_r = p_r
@@ -190,7 +191,7 @@ class SodProblem:
 
 
     def sp2p1(self, a1, a4):
-        # Uses Newton-secant method to iterate on eqn 7.94 (Anderson, 
+        # Uses Newton-secant method to iterate on eqn 7.94 (Anderson,
         # 1984) to find p2p1 across moving shock wave.
 
         # Set some variables
@@ -227,7 +228,7 @@ class SodProblem:
             t2 = gm1 * ( a1 / a4 ) * ( p2p1 - 1.0 )
             t3 = 2.0 * gam * ( 2.0 * gam + gp1 * ( p2p1 - 1.0 ) )
 
-            f  = p4 / p1 - p2p1 * ( 1.0 - t2 / sqrt(t3) )**t1 
+            f  = p4 / p1 - p2p1 * ( 1.0 - t2 / sqrt(t3) )**t1
 
             if abs(f) > self.tol and  itcount < itmax:
                 p2p1n = p2p1 - f * ( p2p1 - p2p1m ) / ( f - fm )
@@ -246,11 +247,16 @@ class SodProblem:
 
 
 if __name__ == "__main__":
-    sod = SodFunction()
-    
-    for t in numpy.linspace(0, 0.2, 4):
-        data = sod.compute_points_for_t(t)
+    sod = SodProblem()
+
+    #for t in numpy.linspace(0, 0.2, 4):
+    for t in [0.2]:
+        data = sod.get_data_for_time(t)
         from matplotlib.pyplot import plot, show
-        plot(data.abscissae, data.u)
+        plot(data.abscissae, data.rho, "x")
+
+        x_values = numpy.linspace(0, 1, 1000)
+        rho_values = [data([x])[0] for x in x_values]
+        plot(x_values, rho_values, "o-")
     show()
 
