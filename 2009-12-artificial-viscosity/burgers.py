@@ -46,16 +46,30 @@ class LeaningTriangleTestCase(object):
 class TimBump(object):
     a = -1
     b = 1
-    final_time = 10
+    final_time = 0.5
 
     def u0(self, x):
-        xc = .6;
-        if .25 < x <=xc:
-            return 1 + (x-.25)/(xc-.25)
-        elif xc < x <= .75:
-            return 1 + (xc-.25)*(.75-x)/((xc-.25)*(.75-xc))
+        xl = -.12
+        xc = -0.02
+        xr = .1
+        base = 0.2
+
+        if xl < x <=xc:
+            return base + (x-xl)/(xc-xl)
+        elif xc < x <= xr:
+            return base + (xc-xl)*(xr-x)/((xc-xl)*(xr-xc))
         else:
-            return 1
+            return base
+
+
+
+class TimSine(object):
+    a = -1
+    b = 1
+    final_time = 0.5
+
+    def u0(self, x):
+        return sin(10*pi*x)
 
 
 
