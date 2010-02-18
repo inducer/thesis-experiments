@@ -275,8 +275,7 @@ def main(flux_type_arg="upwind"):
 
         return pre_bound_sensor(u, 
                 viscosity_scaling=
-                setup.viscosity_scale*h_over_n
-                *char_vel)
+                setup.viscosity_scale*h_over_n*char_vel)
 
     if setup.smoother is not None:
         bound_smoother = setup.smoother.bind(discr)

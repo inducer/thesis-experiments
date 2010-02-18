@@ -344,15 +344,28 @@ def main(flux_type_arg="upwind"):
     sensor, get_extra_vis_vectors = \
             sensor_from_string(setup.sensor, discr, setup, vis_proj)
 
-    bound_sensor = sensor.bind(discr)
+    pre_bound_sensor = sensor.bind(discr)
+
+    from hedge.bad_cell import make_h_over_n_vector
+    h_over_n = make_h_over_n_vector(discr)
+
+    bound_characteristic_velocity = op.bind_characteristic_velocity(discr)
+
+    def bound_sensor(fields):
+
+        char_vel = bound_characteristic_velocity(fields)
+
+        rho = op.rho(fields)
+        return pre_bound_sensor(rho, 
+                viscosity_scaling=
+                setup.viscosity_scale*h_over_n*char_vel)
 
     if setup.smoother is not None:
         bound_smoother = setup.smoother.bind(discr)
         pre_smoother_bound_sensor = bound_sensor
 
         def bound_sensor(fields):
-            rho = op.rho(fields)
-            result = bound_smoother(pre_smoother_bound_sensor(rho))
+            result = bound_smoother(pre_smoother_bound_sensor(fields))
             return result
 
     bound_op = op.bind(discr, sensor=bound_sensor,
