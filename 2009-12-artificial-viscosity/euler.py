@@ -316,7 +316,7 @@ def main(flux_type_arg="upwind"):
 
     # {{{ L2 error diagnostic
 
-    class L2Error(MultiLogQuantity, TimeTracker):
+    class L2Error(TimeTracker, MultiLogQuantity):
         def __init__(self):
             MultiLogQuantity.__init__(self, 
                     names=["l2_err_rho", "l2_err_e", "l2_err_rho_u"])
@@ -431,7 +431,11 @@ def main(flux_type_arg="upwind"):
 
         vis_fields = (
                 vis_tuples(fields)
-                + [ ("sensor", to_vis(bound_sensor(fields))) ] 
+                + [ 
+                    ("sensor", to_vis(bound_sensor(fields))),
+                    ("char_vel", to_vis(bound_characteristic_velocity(
+                        fields))),
+                    ] 
                 + extra_fields)
 
         visf = vis.make_file(name)

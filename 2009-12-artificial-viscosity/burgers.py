@@ -339,6 +339,8 @@ def main(flux_type_arg="upwind"):
         vis_tuples = [ 
             ("u_dg", vis_u), 
             ("sensor", to_vis(bound_sensor(u))), 
+            ("char_vel", to_vis(bound_characteristic_velocity(
+                fields))),
             ] + extra_fields
 
         visf = vis.make_file(name)
