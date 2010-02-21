@@ -86,28 +86,36 @@ def burgers_survey():
 
 
 def euler_sod_convergence():
+    O = ConstructorPlaceholder
     timestamp = get_timestamp()
 
-    for order in [3, 4, 5, 10]:
-        for n_elements in [20, 40]:
-            for viscosity_scale in [0.1, 0.2, 0.4, 0.8]:
-                job = BatchJob(
-                        "euler-$DATE/N%d-K%d-v%f" % (
-                            order,
-                            n_elements,
-                            viscoscity_scale),
-                        "euler.py",
-                        timestamp=timestamp,
-                        aux_files=["smoother.py", "avcommon.py", "sod.py"])
+    for order in [3, 4, 5, 7]:
+        for n_elements in [20, 40, 80, 160, 320, 640]:
+            for viscosity_scale in [0.2, 0.4, 0.8]:
+                for smoother in [
+                        O("TriBlobSmoother", use_max=False),
+                        O("VertexwiseMaxSmoother"),
+                        ]:
+                    job = BatchJob(
+                            "euler-$DATE/N%d-K%d-v%f-%s" % (
+                                order,
+                                n_elements,
+                                viscosity_scale,
+                                cn_with_args(smoother),
+                                ),
+                            "euler.py",
+                            timestamp=timestamp,
+                            aux_files=["smoother.py", "avcommon.py", "sod.py"])
 
-                job.write_setup([
-                    "order = %d" % order,
-                    "n_elements = %d" % n_elements,
-                    "viscoscity_scale = %r" % viscosity_scale,
-                    "vis_interval = 0.05",
-                    "case = SodProblem()",
-                    ])
-                job.submit()
+                    job.write_setup([
+                        "order = %d" % order,
+                        "n_elements = %d" % n_elements,
+                        "viscosity_scale = %r" % viscosity_scale,
+                        "vis_interval = 0.05",
+                        "case = SodProblem()",
+                        "smoother = %s" % smoother,
+                        ])
+                    job.submit()
 
 
 
