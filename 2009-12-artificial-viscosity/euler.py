@@ -177,15 +177,19 @@ def main(flux_type_arg="upwind"):
     rcon = guess_run_context()
 
     from avcommon import make_ui
+    from euler_airplane import AirplaneProblem
     ui = make_ui(cases=[
         SodProblem,
         LaxProblem,
         ShuOsherProblem,
+        AirplaneProblem
         ])
     setup = ui.gather()
 
     if rcon.is_head_rank:
-        if True:
+        if hasattr(setup.case, "make_mesh"):
+            mesh = setup.case.make_mesh()
+        elif True:
             from hedge.mesh.generator import make_uniform_1d_mesh
             mesh = make_uniform_1d_mesh(
                     setup.case.a, setup.case.b, 
@@ -229,6 +233,7 @@ def main(flux_type_arg="upwind"):
             #"dump_op_code"
             ]
             )
+
     if setup.vis_order is not None and setup.vis_order != setup.order:
         vis_discr = rcon.make_discretization(mesh_data, order=setup.vis_order)
     else:
@@ -244,9 +249,12 @@ def main(flux_type_arg="upwind"):
     import pymbolic
     var = pymbolic.var
 
-    initial_func = setup.case.make_initial_func()
-    fields = make_obj_array(
-            discr.interpolate_volume_function(initial_func))
+    if hasattr(setup.case, "get_initial_data"):
+        fields = setup.case.get_initial_data().volume_interpolant(0, discr)
+    else:
+        initial_func = setup.case.make_initial_func()
+        fields = make_obj_array(
+                discr.interpolate_volume_function(initial_func))
 
     # operator setup ----------------------------------------------------------
     from hedge.data import \
@@ -260,22 +268,25 @@ def main(flux_type_arg="upwind"):
     from hedge.models.gas_dynamics import GasDynamicsOperator
     from hedge.mesh import TAG_ALL, TAG_NONE
 
-    op = GasDynamicsOperator(mesh.dimensions,
-            gamma=setup.case.gamma,
-            mu=0,
+    if hasattr(setup.case, "get_operator"):
+        op = setup.case.get_operator(setup)
+    else:
+        op = GasDynamicsOperator(mesh.dimensions,
+                gamma=setup.case.gamma,
+                mu=0,
 
-            bc_supersonic_inflow=TimeConstantGivenFunction(
-                GivenFunction(initial_func)),
+                bc_supersonic_inflow=TimeConstantGivenFunction(
+                    GivenFunction(initial_func)),
 
-            second_order_scheme=IPDGSecondDerivative(
-                stab_coefficient=setup.stab_coefficient),
-            #second_order_scheme=CentralSecondDerivative(),
+                second_order_scheme=IPDGSecondDerivative(
+                    stab_coefficient=setup.stab_coefficient),
+                #second_order_scheme=CentralSecondDerivative(),
 
-            supersonic_inflow_tag=TAG_ALL,
-            supersonic_outflow_tag=TAG_NONE,
-            inflow_tag=TAG_NONE,
-            outflow_tag=TAG_NONE,
-            noslip_tag=TAG_NONE)
+                supersonic_inflow_tag=TAG_ALL,
+                supersonic_outflow_tag=TAG_NONE,
+                inflow_tag=TAG_NONE,
+                outflow_tag=TAG_NONE,
+                noslip_tag=TAG_NONE)
 
     if rcon.is_head_rank:
         print "%d elements" % len(discr.mesh.elements)
@@ -339,7 +350,7 @@ def main(flux_type_arg="upwind"):
 
     # }}}
 
-    # {{{ timestep loop -----------------------------------------------------------
+    # {{{ rhs setup -----------------------------------------------------------
     from avcommon import sensor_from_string
     sensor, get_extra_vis_vectors = \
             sensor_from_string(setup.sensor, discr, setup, vis_proj)
