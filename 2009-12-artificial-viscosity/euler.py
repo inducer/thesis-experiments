@@ -173,10 +173,7 @@ def pre_smudge_ic(discr, op, bound_sensor, fields, adv_dt, visualize):
 
 
 def main(flux_type_arg="upwind"):
-    from hedge.backends import guess_run_context
-    rcon = guess_run_context()
-
-    from avcommon import make_ui
+    from avcommon import make_ui, make_discr
     ui = make_ui(cases=[
         SodProblem,
         LaxProblem,
@@ -184,51 +181,8 @@ def main(flux_type_arg="upwind"):
         ])
     setup = ui.gather()
 
-    if rcon.is_head_rank:
-        if True:
-            from hedge.mesh.generator import make_uniform_1d_mesh
-            mesh = make_uniform_1d_mesh(
-                    setup.case.a, setup.case.b, 
-                    setup.n_elements, 
-                    periodic=False)
-        else:
-            extent_y = 4
-            dx = (setup.case.b-setup.case.a)/n_elements
-            subdiv = (n_elements, int(1+extent_y//dx))
-            from pytools import product
+    rcon, mesh_data, discr = make_discr(setup)
 
-            from hedge.mesh.generator import make_rect_mesh
-            mesh = make_rect_mesh((setup.case.a, 0), (setup.case.b, extent_y), 
-                    periodicity=(True, True), 
-                    subdivisions=subdiv,
-                    max_area=(setup.case.b-setup.case.a)*extent_y/(2*product(subdiv))
-                    )
-
-    if rcon.is_head_rank:
-        mesh_data = rcon.distribute_mesh(mesh)
-    else:
-        mesh_data = rcon.receive_mesh()
-
-    if setup.quad_min_degree is None:
-        quad_min_degrees = {
-                "gasdyn_vol": 3*setup.order,
-                "gasdyn_face": 3*setup.order,
-                }
-    elif setup.quad_min_degree == 0:
-        quad_min_degrees = {}
-    else:
-        quad_min_degrees = {
-                "gasdyn_vol": setup.quad_min_degree,
-                "gasdyn_face": setup.quad_min_degree,
-                }
-
-    discr = rcon.make_discretization(mesh_data, order=setup.order,
-            quad_min_degrees=quad_min_degrees,
-            debug=[
-            #"dump_optemplate_stages",
-            #"dump_op_code"
-            ]
-            )
     if setup.vis_order is not None and setup.vis_order != setup.order:
         vis_discr = rcon.make_discretization(mesh_data, order=setup.vis_order)
     else:
@@ -260,7 +214,7 @@ def main(flux_type_arg="upwind"):
     from hedge.models.gas_dynamics import GasDynamicsOperator
     from hedge.mesh import TAG_ALL, TAG_NONE
 
-    op = GasDynamicsOperator(mesh.dimensions,
+    op = GasDynamicsOperator(discr.dimensions,
             gamma=setup.case.gamma,
             mu=0,
 

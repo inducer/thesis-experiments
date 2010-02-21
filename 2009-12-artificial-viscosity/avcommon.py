@@ -8,6 +8,8 @@ def make_ui(cases):
     from smoother import TriBlobSmoother, VertexwiseMaxSmoother
 
     variables = {
+        "use_2d": False,
+
         "vis_interval": None,
         "vis_interval_steps": 0,
 
@@ -119,3 +121,57 @@ def sensor_from_string(sensor_str, discr, setup, vis_proj):
 
     return sensor, get_extra_vis_vectors
 
+
+
+
+def make_discr(setup):
+    from hedge.backends import guess_run_context
+    rcon = guess_run_context()
+
+    if rcon.is_head_rank:
+        if setup.use_2d:
+            extent_y = 4
+            dx = (setup.case.b-setup.case.a)/setup.n_elements
+            subdiv = (setup.n_elements, int(1+extent_y//dx))
+            from pytools import product
+
+            from hedge.mesh.generator import make_rect_mesh
+            mesh = make_rect_mesh((setup.case.a, 0), (setup.case.b, extent_y), 
+                    periodicity=(True, True), 
+                    subdivisions=subdiv,
+                    max_area=(setup.case.b-setup.case.a)*extent_y/(2*product(subdiv))
+                    )
+        else:
+            from hedge.mesh.generator import make_uniform_1d_mesh
+            mesh = make_uniform_1d_mesh(
+                    setup.case.a, setup.case.b, 
+                    setup.n_elements, 
+                    periodic=False)
+
+    if rcon.is_head_rank:
+        mesh_data = rcon.distribute_mesh(mesh)
+    else:
+        mesh_data = rcon.receive_mesh()
+
+    if setup.quad_min_degree is None:
+        quad_min_degrees = {
+                "gasdyn_vol": 3*setup.order,
+                "gasdyn_face": 3*setup.order,
+                }
+    elif setup.quad_min_degree == 0:
+        quad_min_degrees = {}
+    else:
+        quad_min_degrees = {
+                "gasdyn_vol": setup.quad_min_degree,
+                "gasdyn_face": setup.quad_min_degree,
+                }
+
+    discr = rcon.make_discretization(mesh_data, order=setup.order,
+            quad_min_degrees=quad_min_degrees,
+            debug=[
+            #"dump_optemplate_stages",
+            #"dump_op_code"
+            ]
+            )
+
+    return rcon, mesh_data, discr

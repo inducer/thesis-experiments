@@ -103,10 +103,7 @@ class OffCenterStationaryTestCase(object):
 
 
 def main(flux_type_arg="upwind"):
-    from hedge.backends import guess_run_context
-    rcon = guess_run_context()
-
-    from avcommon import make_ui
+    from avcommon import make_ui, make_discr
     ui = make_ui(cases=[
             LeaningTriangleTestCase,
             CenteredStationaryTestCase,
@@ -117,39 +114,8 @@ def main(flux_type_arg="upwind"):
             ])
     setup = ui.gather()
 
-    if rcon.is_head_rank:
-        if True:
-            from hedge.mesh.generator import make_uniform_1d_mesh
-            mesh = make_uniform_1d_mesh(setup.case.a, setup.case.b, setup.n_elements, periodic=True)
-        else:
-            extent_y = setup.case.b-setup.case.a
-            dx = (setup.case.b-setup.case.a)/setup.n_elements
-            subdiv = (setup.n_elements, int(1+extent_y//dx))
-            from pytools import product
+    rcon, mesh_data, discr = make_discr(setup)
 
-            from hedge.mesh.generator import make_rect_mesh
-            mesh = make_rect_mesh((setup.case.a, 0), (setup.case.b, extent_y), 
-                    periodicity=(True, True), 
-                    subdivisions=subdiv,
-                    max_area=(setup.case.b-setup.case.a)*extent_y/(2*product(subdiv))
-                    )
-
-    if rcon.is_head_rank:
-        mesh_data = rcon.distribute_mesh(mesh)
-    else:
-        mesh_data = rcon.receive_mesh()
-
-    if setup.quad_min_degree is None:
-        quad_min_degrees = {"quad":3*setup.order}
-    elif setup.quad_min_degree == 0:
-        quad_min_degrees = {}
-    else:
-        quad_min_degrees = {"quad": setup.quad_min_degree}
-
-    discr = rcon.make_discretization(mesh_data, order=setup.order,
-            quad_min_degrees=quad_min_degrees,
-            #debug=["dump_optemplate_stages"]
-            )
     if setup.vis_order is not None and setup.vis_order != setup.order:
         vis_discr = rcon.make_discretization(mesh_data, order=setup.vis_order)
     else:
@@ -172,7 +138,7 @@ def main(flux_type_arg="upwind"):
             LDGSecondDerivative, \
             CentralSecondDerivative)
     from hedge.models.burgers import BurgersOperator
-    op = BurgersOperator(mesh.dimensions,
+    op = BurgersOperator(discr.dimensions,
             viscosity_scheme=IPDGSecondDerivative(stab_coefficient=setup.stab_coefficient))
 
     if rcon.is_head_rank:
@@ -340,7 +306,7 @@ def main(flux_type_arg="upwind"):
             ("u_dg", vis_u), 
             ("sensor", to_vis(bound_sensor(u))), 
             ("char_vel", to_vis(bound_characteristic_velocity(
-                fields))),
+                u))),
             ] + extra_fields
 
         visf = vis.make_file(name)
@@ -365,7 +331,9 @@ def main(flux_type_arg="upwind"):
     #stepper = Dumka3TimeStepper(4)
 
     stepper.add_instrumentation(logmgr)
-    
+
+    if setup.vis_interval is None:
+        setup.vis_interval = min(1, setup.case.final_time / 100)
 
     next_vis_t = 0
     try:
