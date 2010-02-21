@@ -8,7 +8,7 @@ def make_ui(cases):
     from smoother import TriBlobSmoother, VertexwiseMaxSmoother
 
     variables = {
-        "vis_interval": 2,
+        "vis_interval": None,
         "vis_interval_steps": 0,
 
         "order": 4,

@@ -248,7 +248,7 @@ def main(flux_type_arg="upwind"):
     fields = make_obj_array(
             discr.interpolate_volume_function(initial_func))
 
-    # operator setup ----------------------------------------------------------
+    # {{{ operator setup ------------------------------------------------------
     from hedge.data import \
             GivenFunction, \
             TimeConstantGivenFunction, \
@@ -279,6 +279,8 @@ def main(flux_type_arg="upwind"):
 
     if rcon.is_head_rank:
         print "%d elements" % len(discr.mesh.elements)
+
+    # }}}
 
     # {{{ diagnostics setup ---------------------------------------------------
     from pytools.log import (LogManager,
@@ -461,9 +463,11 @@ def main(flux_type_arg="upwind"):
 
     #fields = pre_smudge_ic(discr, op, bound_sensor, fields, adv_dt, visualize)
 
+    if setup.vis_interval is None:
+        setup.vis_interval = min(1, setup.case.final_time / 100)
+
     next_vis_t = 0
     try:
-
         next_dt = 0.005 * adv_dt
 
         from hedge.timestep import times_and_steps
