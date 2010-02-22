@@ -129,24 +129,27 @@ def make_discr(setup):
     rcon = guess_run_context()
 
     if rcon.is_head_rank:
-        if setup.use_2d:
-            extent_y = 4
-            dx = (setup.case.b-setup.case.a)/setup.n_elements
+        if hasattr(setup.case, "make_mesh"):
+            mesh = setup.case.make_mesh()
+        elif setup.use_2d:
+            extent_x = setup.case.b-setup.case.a
+            extent_y = extent_x*0.5
+            dx = extent_x/setup.n_elements
             subdiv = (setup.n_elements, int(1+extent_y//dx))
             from pytools import product
 
             from hedge.mesh.generator import make_rect_mesh
             mesh = make_rect_mesh((setup.case.a, 0), (setup.case.b, extent_y), 
-                    periodicity=(True, True), 
+                    periodicity=(setup.case_is_periodic, )*2, 
                     subdivisions=subdiv,
-                    max_area=(setup.case.b-setup.case.a)*extent_y/(2*product(subdiv))
+                    max_area=extent_x*extent_y/(2*product(subdiv))
                     )
         else:
             from hedge.mesh.generator import make_uniform_1d_mesh
             mesh = make_uniform_1d_mesh(
                     setup.case.a, setup.case.b, 
                     setup.n_elements, 
-                    periodic=False)
+                    periodic=setup.case.is_periodic)
 
     if rcon.is_head_rank:
         mesh_data = rcon.distribute_mesh(mesh)

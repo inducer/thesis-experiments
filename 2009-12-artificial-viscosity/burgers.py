@@ -9,6 +9,7 @@ from math import sin, pi, sqrt
 class LeaningTriangleTestCase(object):
     a = 0
     b = 150
+    is_periodic = True
     final_time = 280 # that's how long the solution is exact, roughly
 
     def u0(self, x):
@@ -46,6 +47,7 @@ class LeaningTriangleTestCase(object):
 class TimBump(object):
     a = -1
     b = 1
+    is_periodic = True
     final_time = 0.5
 
     def u0(self, x):
@@ -66,6 +68,7 @@ class TimBump(object):
 class TimSine(object):
     a = -1
     b = 1
+    is_periodic = True
     final_time = 0.5
 
     def u0(self, x):
@@ -76,6 +79,7 @@ class TimSine(object):
 class OffCenterMigratingTestCase(object):
     a = -pi
     b = pi
+    is_periodic = True
     final_time = 10
 
     def u0(self, x):
@@ -86,6 +90,7 @@ class CenteredStationaryTestCase(object):
     # does funny things to P-P
     a = -pi
     b = pi
+    is_periodic = True
     final_time = 10
 
     def u0(self, x):
@@ -95,6 +100,7 @@ class OffCenterStationaryTestCase(object):
     # does funny things to P-P
     a = -pi
     b = pi
+    is_periodic = True
     final_time = 10
 
     def u0(self, x):

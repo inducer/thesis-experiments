@@ -131,6 +131,117 @@ class ShuOsherProblem(object):
 
 
 
+class SquareInChannelProblem(object):
+    def __init__(self, el_volume=1):
+        from pytools import add_python_path_relative_to_script
+        add_python_path_relative_to_script("../../hedge/examples/gas_dynamics")
+
+        from gas_dynamics_initials import UniformMachFlow
+        #self.flow = UniformMachFlow(mach=0.84, reynolds=numpy.inf)
+        self.flow = UniformMachFlow(mach=0.1, reynolds=numpy.inf)
+
+        self.final_time = 10
+
+    @property
+    def gamma(self):
+        return self.flow.gamma
+
+    def get_initial_data(self):
+        return self.flow
+
+    def make_mesh(self):
+        def round_trip_connect(seq):
+            result = []
+            for i in range(len(seq)):
+                result.append((i, (i+1)%len(seq)))
+            return result
+
+        def needs_refinement(vertices, area):
+            x =  sum(numpy.array(v) for v in vertices)/3
+
+            max_area_volume = 0.7e-2 + 0.03*(0.05*x[1]**2 + 0.3*min(x[0]+1,0)**2)
+
+            max_area_corners = 1e-3 + 0.001*max(
+                    la.norm(x-corner)**4 for corner in obstacle_corners)
+
+            return bool(area > 10*min(max_area_volume, max_area_corners))
+
+        from meshpy.geometry import make_box
+        points, facets, _ = make_box((-0.5,-0.5), (0.5,0.5))
+        obstacle_corners = points[:]
+
+        from meshpy.geometry import GeometryBuilder, Marker
+
+        profile_marker = Marker.FIRST_USER_MARKER
+        builder = GeometryBuilder()
+        builder.add_geometry(points=points, facets=facets,
+                facet_markers=profile_marker)
+
+        points, facets, facet_markers = make_box((-16, -22), (25, 22))
+        builder.add_geometry(points=points, facets=facets,
+                facet_markers=facet_markers)
+
+        from meshpy.triangle import MeshInfo, build
+        mi = MeshInfo()
+        builder.set(mi)
+        mi.set_holes([(0,0)])
+
+        mesh = build(mi, refinement_func=needs_refinement,
+                allow_boundary_steiner=True,
+                generate_faces=True)
+
+        #from meshpy.triangle import write_gnuplot_mesh
+        #write_gnuplot_mesh("mesh.dat", mesh)
+
+        fvi2fm = mesh.face_vertex_indices_to_face_marker
+
+        face_marker_to_tag = {
+                profile_marker: "no_slip",
+                Marker.MINUS_X: "inflow",
+                Marker.PLUS_X: "outflow",
+                Marker.MINUS_Y: "inflow",
+                Marker.PLUS_Y: "inflow"
+                }
+
+        def bdry_tagger(fvi, el, fn, all_v):
+            face_marker = fvi2fm[fvi]
+            return [face_marker_to_tag[face_marker]]
+
+        from hedge.mesh import make_conformal_mesh_ext
+        vertices = numpy.asarray(mesh.points, dtype=float, order="C")
+        from hedge.mesh.element import Triangle
+        return make_conformal_mesh_ext(
+                vertices,
+                [Triangle(i, el_idx, vertices)
+                    for i, el_idx in enumerate(mesh.elements)],
+                bdry_tagger)
+
+    def get_operator(self, setup):
+        from hedge.models.gas_dynamics import GasDynamicsOperator
+        from hedge.second_order import IPDGSecondDerivative
+        from hedge.mesh import TAG_ALL, TAG_NONE
+
+        return GasDynamicsOperator(dimensions=2,
+                gamma=self.flow.gamma,
+                mu=self.flow.mu,
+
+                bc_inflow=self.flow,
+                bc_outflow=self.flow,
+                bc_noslip=self.flow,
+
+                second_order_scheme=IPDGSecondDerivative(
+                    stab_coefficient=setup.stab_coefficient),
+                #second_order_scheme=CentralSecondDerivative(),
+
+                supersonic_inflow_tag=TAG_NONE,
+                supersonic_outflow_tag=TAG_NONE,
+                inflow_tag="inflow",
+                outflow_tag="outflow",
+                noslip_tag="no_slip")
+
+
+
+
 def make_stepper():
     #from hedge.timestep import RK4TimeStepper
     from hedge.timestep.dumka3 import Dumka3TimeStepper
@@ -174,10 +285,13 @@ def pre_smudge_ic(discr, op, bound_sensor, fields, adv_dt, visualize):
 
 def main(flux_type_arg="upwind"):
     from avcommon import make_ui, make_discr
+    from euler_airplane import AirplaneProblem
     ui = make_ui(cases=[
         SodProblem,
         LaxProblem,
         ShuOsherProblem,
+        AirplaneProblem,
+        SquareInChannelProblem,
         ])
     setup = ui.gather()
 
@@ -198,9 +312,12 @@ def main(flux_type_arg="upwind"):
     import pymbolic
     var = pymbolic.var
 
-    initial_func = setup.case.make_initial_func()
-    fields = make_obj_array(
-            discr.interpolate_volume_function(initial_func))
+    if hasattr(setup.case, "get_initial_data"):
+        fields = setup.case.get_initial_data().volume_interpolant(0, discr)
+    else:
+        initial_func = setup.case.make_initial_func()
+        fields = make_obj_array(
+                discr.interpolate_volume_function(initial_func))
 
     # {{{ operator setup ------------------------------------------------------
     from hedge.data import \
@@ -214,22 +331,25 @@ def main(flux_type_arg="upwind"):
     from hedge.models.gas_dynamics import GasDynamicsOperator
     from hedge.mesh import TAG_ALL, TAG_NONE
 
-    op = GasDynamicsOperator(discr.dimensions,
-            gamma=setup.case.gamma,
-            mu=0,
+    if hasattr(setup.case, "get_operator"):
+        op = setup.case.get_operator(setup)
+    else:
+        op = GasDynamicsOperator(discr.dimensions,
+                gamma=setup.case.gamma,
+                mu=0,
 
-            bc_supersonic_inflow=TimeConstantGivenFunction(
-                GivenFunction(initial_func)),
+                bc_supersonic_inflow=TimeConstantGivenFunction(
+                    GivenFunction(initial_func)),
 
-            second_order_scheme=IPDGSecondDerivative(
-                stab_coefficient=setup.stab_coefficient),
-            #second_order_scheme=CentralSecondDerivative(),
+                second_order_scheme=IPDGSecondDerivative(
+                    stab_coefficient=setup.stab_coefficient),
+                #second_order_scheme=CentralSecondDerivative(),
 
-            supersonic_inflow_tag=TAG_ALL,
-            supersonic_outflow_tag=TAG_NONE,
-            inflow_tag=TAG_NONE,
-            outflow_tag=TAG_NONE,
-            noslip_tag=TAG_NONE)
+                supersonic_inflow_tag=TAG_ALL,
+                supersonic_outflow_tag=TAG_NONE,
+                inflow_tag=TAG_NONE,
+                outflow_tag=TAG_NONE,
+                noslip_tag=TAG_NONE)
 
     if rcon.is_head_rank:
         print "%d elements" % len(discr.mesh.elements)
@@ -295,7 +415,7 @@ def main(flux_type_arg="upwind"):
 
     # }}}
 
-    # {{{ timestep loop -----------------------------------------------------------
+    # {{{ rhs setup -----------------------------------------------------------
     from avcommon import sensor_from_string
     sensor, get_extra_vis_vectors = \
             sensor_from_string(setup.sensor, discr, setup, vis_proj)
