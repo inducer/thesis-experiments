@@ -8,6 +8,7 @@ from pytools.obj_array import make_obj_array
 
 class SodProblem(object):
     final_time = 0.25
+    is_periodic = False
 
     def __init__(self, **kwargs):
         from sod import SodProblem
@@ -62,6 +63,8 @@ class LaxProblem(object):
     # http://www.crs4.it/HTML/int_book/NumericalMethods/subsection3_3_1.html
     a = 0
     b = 4
+    is_periodic = False
+
     gamma = 1.4
     final_time = 0.17*b
 
@@ -98,6 +101,8 @@ class ShuOsherProblem(object):
     # http://www.astro.princeton.edu/~jstone/tests/shu-osher/Shu-Osher.html
     a = -5
     b = 5
+    is_periodic = False
+
     gamma = 1.4
     final_time = 2
 
@@ -322,7 +327,8 @@ def main(flux_type_arg="upwind"):
     if hasattr(setup.case, "get_initial_data"):
         fields = setup.case.get_initial_data().volume_interpolant(0, discr)
     else:
-        fields = approximate_func(setup.case.make_initial_func())
+        initial_func = setup.case.make_initial_func()
+        fields = approximate_func(initial_func)
 
     # {{{ operator setup ------------------------------------------------------
     from hedge.data import \
