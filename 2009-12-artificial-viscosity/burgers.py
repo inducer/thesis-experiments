@@ -44,6 +44,35 @@ class LeaningTriangleTestCase(object):
 
         return max(f(x, shock_loc), f(x-self.b, shock_loc-self.b))
 
+class MultipliedLeaningTriangleTestCase(object):
+    a = 0
+    b = 150
+    is_periodic = True
+    factor = 2
+    final_time = 240/factor # that's how long the solution is exact, roughly
+
+
+    def u0(self, x):
+        t = 0
+        def f(x, shock_loc):
+            if x < (t-40)/4:
+                return 1/4
+            elif x < (3*t)/4:
+                return (x+15)/(t+20)
+            elif x < (t+80)/4:
+                return (x-30)/(t-40)
+            else:
+                return 1/4
+
+        shock_loc = 30*sqrt(2*t+40)/sqrt(120) + t/4 - 10
+        shock_win = (shock_loc + 20) // self.b
+        x += shock_win * 150 
+
+        x -= 20
+
+        return self.factor*max(f(x, shock_loc), f(x-self.b, shock_loc-self.b))
+
+
 class TimBump(object):
     a = -1
     b = 1
@@ -112,6 +141,7 @@ def main(flux_type_arg="upwind"):
     from avcommon import make_ui, make_discr
     ui = make_ui(cases=[
             LeaningTriangleTestCase,
+            MultipliedLeaningTriangleTestCase,
             CenteredStationaryTestCase,
             OffCenterStationaryTestCase,
             OffCenterMigratingTestCase,
