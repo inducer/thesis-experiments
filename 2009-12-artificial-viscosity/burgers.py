@@ -154,7 +154,18 @@ def main(flux_type_arg="upwind"):
     import pymbolic
     var = pymbolic.var
 
-    u = discr.interpolate_volume_function(lambda x, el: setup.case.u0(x[0]))
+    if discr.dimensions > 1:
+        def approximate_func(f):
+            return discr.interpolate_volume_function(f)
+    else:
+        def approximate_func(f):
+            from hedge.discretization import adaptive_project_function_1d
+            return adaptive_project_function_1d(discr, f)
+
+    def initial_func(x, el): 
+        return setup.case.u0(x[0])
+
+    u = approximate_func(initial_func)
 
     # {{{ diagnostics setup ---------------------------------------------------
     from pytools.log import (LogManager,
@@ -220,7 +231,7 @@ def main(flux_type_arg="upwind"):
             self.t = 0
 
         def __call__(self):
-            u_exact = discr.interpolate_volume_function(
+            u_exact = approximate_func(
                     lambda x, el: setup.case.u_exact(x[0], t))
             self.t += self.dt
             return discr.norm(u-u_exact)

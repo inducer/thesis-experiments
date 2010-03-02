@@ -309,15 +309,20 @@ def main(flux_type_arg="upwind"):
     vis = SiloVisualizer(vis_discr, rcon)
 
     # initial condition -------------------------------------------------------
-    import pymbolic
-    var = pymbolic.var
+    if discr.dimensions > 1:
+        def approximate_func(f):
+            return make_obj_array(
+                discr.interpolate_volume_function(f))
+    else:
+        def approximate_func(f):
+            from hedge.discretization import adaptive_project_function_1d
+            return make_obj_array(
+                    adaptive_project_function_1d(discr, f))
 
     if hasattr(setup.case, "get_initial_data"):
         fields = setup.case.get_initial_data().volume_interpolant(0, discr)
     else:
-        initial_func = setup.case.make_initial_func()
-        fields = make_obj_array(
-                discr.interpolate_volume_function(initial_func))
+        fields = approximate_func(setup.case.make_initial_func())
 
     # {{{ operator setup ------------------------------------------------------
     from hedge.data import \
@@ -398,8 +403,7 @@ def main(flux_type_arg="upwind"):
 
         def __call__(self):
             exact_func = setup.case.make_exact_func(self.t)
-            exact_fields = make_obj_array(
-                    discr.interpolate_volume_function(exact_func))
+            exact_fields = approximate_func(exact_func)
 
             return [
                     discr.norm(op.rho(fields)-op.rho(exact_fields)),
@@ -492,11 +496,12 @@ def main(flux_type_arg="upwind"):
 
         if hasattr(setup.case, "make_exact_func"):
             exact_func = setup.case.make_exact_func(t)
-            exact_fields = discr.interpolate_volume_function(
-                        exact_func)
+            exact_fields = make_obj_array(discr.interpolate_volume_function(
+                        exact_func))
 
-            extra_fields = vis_tuples(
-                    make_obj_array(exact_fields), "_exact")
+            extra_fields = (
+                    vis_tuples(exact_fields, "_exact")
+                    + vis_tuples(exact_fields - fields, "_error"))
         else:
             extra_fields = []
 

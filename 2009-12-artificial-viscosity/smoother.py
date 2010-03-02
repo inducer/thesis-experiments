@@ -430,6 +430,9 @@ class TriBlobSmoother(object):
 
 
 class VertexwiseMaxSmoother(object):
+    def __str__(self):
+        return type(self).__name__
+
     @memoize_method
     def make_per_vertex_linear_ramps(self, ldis):
         result = []
