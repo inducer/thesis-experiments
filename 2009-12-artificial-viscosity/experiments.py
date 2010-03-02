@@ -91,12 +91,12 @@ def euler_sod_convergence():
 
     for order in [3, 4, 5, 7]:
         for n_elements in [20, 40, 80, 160, 320, 640]:
+            n_elements += 1
             for viscosity_scale in [0.2, 0.4, 0.8]:
                 for smoother in [
                         O("TriBlobSmoother", use_max=False),
                         O("VertexwiseMaxSmoother"),
                         ]:
-                    n_elements += 1
                     job = BatchJob(
                             "euler-$DATE/N%d-K%d-v%f-%s" % (
                                 order,
