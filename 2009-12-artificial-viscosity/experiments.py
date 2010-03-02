@@ -105,7 +105,8 @@ def euler_sod_convergence():
                                 ),
                             "euler.py",
                             timestamp=timestamp,
-                            aux_files=["smoother.py", "avcommon.py", "sod.py"])
+                            aux_files=["smoother.py", "avcommon.py", "sod.py",
+                                "euler_airplane.py"])
 
                     job.write_setup([
                         "order = %d" % order,
