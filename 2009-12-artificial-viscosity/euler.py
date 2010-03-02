@@ -419,7 +419,7 @@ def main(flux_type_arg="upwind"):
 
     if hasattr(setup.case, "make_exact_func"):
         error_quantity = L2Error()
-        logmgr.add_quantity(error_quantity, interval=10)
+        logmgr.add_quantity(error_quantity, interval=40)
 
     # }}}
 
@@ -553,7 +553,7 @@ def main(flux_type_arg="upwind"):
     #fields = pre_smudge_ic(discr, op, bound_sensor, fields, adv_dt, visualize)
 
     if setup.vis_interval is None:
-        setup.vis_interval = min(1, setup.case.final_time / 100)
+        setup.vis_interval = min(1, setup.case.final_time / 20)
 
     next_vis_t = 0
     try:

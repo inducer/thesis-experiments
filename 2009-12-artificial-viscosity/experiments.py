@@ -96,6 +96,7 @@ def euler_sod_convergence():
                         O("TriBlobSmoother", use_max=False),
                         O("VertexwiseMaxSmoother"),
                         ]:
+                    n_elements += 1
                     job = BatchJob(
                             "euler-$DATE/N%d-K%d-v%f-%s" % (
                                 order,
