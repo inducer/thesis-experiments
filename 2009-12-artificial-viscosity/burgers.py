@@ -255,19 +255,19 @@ def main(flux_type_arg="upwind"):
     rhs_counter = EventCounter("rhs_evaluations")
     logmgr.add_quantity(rhs_counter)
 
-    class L2Error(SimulationLogQuantity):
+    class L1Error(SimulationLogQuantity):
         def __init__(self):
-            SimulationLogQuantity.__init__(self, 0, "l2_error")
+            SimulationLogQuantity.__init__(self, 0, "l1_error")
             self.t = 0
 
         def __call__(self):
             u_exact = approximate_func(
                     lambda x, el: setup.case.u_exact(x[0], t))
             self.t += self.dt
-            return discr.norm(u-u_exact)
+            return discr.norm(u-u_exact, 1)
 
     if hasattr(setup.case, "u_exact"):
-        error_quantity = L2Error()
+        error_quantity = L1Error()
         logmgr.add_quantity(error_quantity, interval=10)
 
     logmgr.add_watches(["step.max", "t_sim.max", "l1_u", "t_step.max"])

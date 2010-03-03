@@ -399,12 +399,12 @@ def main(flux_type_arg="upwind"):
 
     logmgr.add_watches(["step.max", "t_sim.max", "l1_u", "t_step.max"])
 
-    # {{{ L2 error diagnostic
+    # {{{ L1 error diagnostic
 
-    class L2Error(TimeTracker, MultiLogQuantity):
+    class L1Error(TimeTracker, MultiLogQuantity):
         def __init__(self):
             MultiLogQuantity.__init__(self, 
-                    names=["l2_err_rho", "l2_err_e", "l2_err_rho_u"])
+                    names=["l1_err_rho", "l1_err_e", "l1_err_rho_u"])
             TimeTracker.__init__(self, None)
 
         def __call__(self):
@@ -412,13 +412,13 @@ def main(flux_type_arg="upwind"):
             exact_fields = approximate_func(exact_func)
 
             return [
-                    discr.norm(op.rho(fields)-op.rho(exact_fields)),
-                    discr.norm(op.e(fields)-op.e(exact_fields)),
-                    discr.norm(op.rho_u(fields)-op.rho_u(exact_fields)),
+                    discr.norm(op.rho(fields)-op.rho(exact_fields), 1),
+                    discr.norm(op.e(fields)-op.e(exact_fields), 1),
+                    discr.norm(op.rho_u(fields)-op.rho_u(exact_fields), 1),
                     ]
 
     if hasattr(setup.case, "make_exact_func"):
-        error_quantity = L2Error()
+        error_quantity = L1Error()
         logmgr.add_quantity(error_quantity, interval=40)
 
     # }}}
