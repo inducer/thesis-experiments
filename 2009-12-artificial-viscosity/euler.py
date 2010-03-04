@@ -372,8 +372,8 @@ def main(flux_type_arg="upwind"):
             add_general_quantities,
             add_simulation_quantities,
             add_run_info,
-            MultiLogQuantity, EventCounter,
-            DtConsumer, TimeTracker)
+            MultiLogQuantity, EventCounter, LogQuantity,
+            TimeTracker)
 
     log_file_name = "euler.dat"
 
@@ -400,6 +400,15 @@ def main(flux_type_arg="upwind"):
     logmgr.add_watches(["step.max", "t_sim.max", "l1_u", "t_step.max"])
 
     # {{{ L1 error diagnostic
+
+    class MaxSensor(LogQuantity):
+        def __init__(self):
+            LogQuantity.__init__(self, "max_sensor")
+
+        def __call__(self):
+            return numpy.max(bound_sensor(fields))
+
+    logmgr.add_quantity(MaxSensor())
 
     class L1Error(TimeTracker, MultiLogQuantity):
         def __init__(self):

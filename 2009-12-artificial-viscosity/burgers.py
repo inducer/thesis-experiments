@@ -202,7 +202,8 @@ def main(flux_type_arg="upwind"):
             add_general_quantities,
             add_simulation_quantities,
             add_run_info,
-            SimulationLogQuantity,
+            LogQuantity,
+            TimeTracker,
             MultiLogQuantity, EventCounter)
 
     log_file_name = "burgers.dat"
@@ -255,10 +256,19 @@ def main(flux_type_arg="upwind"):
     rhs_counter = EventCounter("rhs_evaluations")
     logmgr.add_quantity(rhs_counter)
 
-    class L1Error(SimulationLogQuantity):
+    class MaxSensor(LogQuantity):
         def __init__(self):
-            SimulationLogQuantity.__init__(self, 0, "l1_error")
-            self.t = 0
+            LogQuantity.__init__(self, "max_sensor")
+
+        def __call__(self):
+            return numpy.max(bound_sensor(u))
+
+    logmgr.add_quantity(MaxSensor())
+
+    class L1Error(TimeTracker, LogQuantity):
+        def __init__(self):
+            LogQuantity.__init__(self, 0, "l1_error")
+            TimeTracker.__init__(self, None)
 
         def __call__(self):
             u_exact = approximate_func(
