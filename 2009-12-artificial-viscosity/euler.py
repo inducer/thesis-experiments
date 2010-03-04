@@ -315,11 +315,11 @@ def main(flux_type_arg="upwind"):
 
     # initial condition -------------------------------------------------------
     if discr.dimensions > 1:
-        def approximate_func(f):
+        def approximate_func(discr, f):
             return make_obj_array(
                 discr.interpolate_volume_function(f))
     else:
-        def approximate_func(f):
+        def approximate_func(discr, f):
             from hedge.discretization import adaptive_project_function_1d
             return make_obj_array(
                     adaptive_project_function_1d(discr, f))
@@ -328,7 +328,7 @@ def main(flux_type_arg="upwind"):
         fields = setup.case.get_initial_data().volume_interpolant(0, discr)
     else:
         initial_func = setup.case.make_initial_func()
-        fields = approximate_func(initial_func)
+        fields = approximate_func(discr, initial_func)
 
     # {{{ operator setup ------------------------------------------------------
     from hedge.data import \
@@ -399,8 +399,6 @@ def main(flux_type_arg="upwind"):
 
     logmgr.add_watches(["step.max", "t_sim.max", "l1_u", "t_step.max"])
 
-    # {{{ L1 error diagnostic
-
     class MaxSensor(LogQuantity):
         def __init__(self):
             LogQuantity.__init__(self, "max_sensor")
@@ -410,6 +408,8 @@ def main(flux_type_arg="upwind"):
 
     logmgr.add_quantity(MaxSensor())
 
+    # {{{ L1 error diagnostic
+
     class L1Error(TimeTracker, MultiLogQuantity):
         def __init__(self):
             MultiLogQuantity.__init__(self, 
@@ -417,13 +417,23 @@ def main(flux_type_arg="upwind"):
             TimeTracker.__init__(self, None)
 
         def __call__(self):
-            exact_func = setup.case.make_exact_func(self.t)
-            exact_fields = approximate_func(exact_func)
+            def to_vis(f):
+                return vis_proj(discr.convert_volume(f, kind="numpy"))
 
+            exact_func = setup.case.make_exact_func(self.t)
+            exact_fields = approximate_func(vis_discr, exact_func)
+
+            if vis_discr is discr:
+                from warnings import warn
+                warn("L1 norm might be inaccurate")
+
+            vis_fields = to_vis(fields)
+
+            from avcommon import l1_norm
             return [
-                    discr.norm(op.rho(fields)-op.rho(exact_fields), 1),
-                    discr.norm(op.e(fields)-op.e(exact_fields), 1),
-                    discr.norm(op.rho_u(fields)-op.rho_u(exact_fields), 1),
+                    l1_norm(vis_discr, op.rho(vis_fields)-op.rho(exact_fields)),
+                    l1_norm(vis_discr, op.e(vis_fields)-op.e(exact_fields)),
+                    l1_norm(vis_discr, op.rho_u(vis_fields)-op.rho_u(exact_fields)),
                     ]
 
     if hasattr(setup.case, "make_exact_func"):
@@ -539,7 +549,7 @@ def main(flux_type_arg="upwind"):
         # {{{ save vis data for quad plot
         if discr.dimensions == 1:
             for name, data in vis_fields:
-                if len(data.shape) > 1:
+                if data.dtype == object:
                     data = data[0]
                 vis_arrays.setdefault(name, []).append(data)
             vis_times.append(t)

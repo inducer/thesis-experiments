@@ -89,9 +89,13 @@ def euler_sod_convergence():
     O = ConstructorPlaceholder
     timestamp = get_timestamp()
 
-    for order in [3, 4, 5, 7]:
+    for order in [4, 5, 7, 9]:
         for n_elements in [20, 40, 80, 160, 320, 640]:
+            if n_elements >= 500 and order > 7:
+                continue
+
             n_elements += 1
+
             for viscosity_scale in [0.2, 0.4, 0.8]:
                 for smoother in [
                         O("TriBlobSmoother", use_max=False),
@@ -116,6 +120,7 @@ def euler_sod_convergence():
                         "vis_interval = 0.05",
                         "case = SodProblem()",
                         "smoother = %s" % smoother,
+                        "vis_order = %d" % (2*order),
                         ])
                     job.submit()
 

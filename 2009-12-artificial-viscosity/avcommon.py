@@ -178,3 +178,16 @@ def make_discr(setup):
             )
 
     return rcon, mesh_data, discr
+
+
+
+
+def l1_norm(discr, field):
+    if discr.dimensions > 0:
+        return discr.norm(field, 1)
+    else:
+        from scipy.integrate import trapz
+        from pytools.obj_array import with_object_array_or_scalar
+        return numpy.sum(with_object_array_or_scalar(
+                lambda f: trapz(numpy.abs(f), discr.nodes[:, 0]),
+                field))

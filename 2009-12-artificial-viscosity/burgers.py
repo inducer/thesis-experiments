@@ -185,17 +185,17 @@ def main(flux_type_arg="upwind"):
     var = pymbolic.var
 
     if discr.dimensions > 1:
-        def approximate_func(f):
+        def approximate_func(discr, f):
             return discr.interpolate_volume_function(f)
     else:
-        def approximate_func(f):
+        def approximate_func(discr, f):
             from hedge.discretization import adaptive_project_function_1d
             return adaptive_project_function_1d(discr, f)
 
     def initial_func(x, el): 
         return setup.case.u0(x[0])
 
-    u = approximate_func(initial_func)
+    u = approximate_func(discr, initial_func)
 
     # {{{ diagnostics setup ---------------------------------------------------
     from pytools.log import (LogManager,
@@ -267,14 +267,22 @@ def main(flux_type_arg="upwind"):
 
     class L1Error(TimeTracker, LogQuantity):
         def __init__(self):
-            LogQuantity.__init__(self, 0, "l1_error")
+            LogQuantity.__init__(self, "l1_error")
             TimeTracker.__init__(self, None)
 
         def __call__(self):
-            u_exact = approximate_func(
-                    lambda x, el: setup.case.u_exact(x[0], t))
-            self.t += self.dt
-            return discr.norm(u-u_exact, 1)
+            def to_vis(f):
+                return vis_proj(discr.convert_volume(f, kind="numpy"))
+
+            if vis_discr is discr:
+                from warnings import warn
+                warn("L1 norm might be inaccurate")
+
+            u_exact = approximate_func(vis_discr,
+                    lambda x, el: setup.case.u_exact(x[0], self.t))
+
+            from avcommon import l1_norm
+            return l1_norm(vis_discr, to_vis(u)-u_exact)
 
     if hasattr(setup.case, "u_exact"):
         error_quantity = L1Error()
