@@ -87,16 +87,22 @@ class DumkaMaker:
         from hedge.timestep.dumka3 import Dumka3TimeStepper
         return Dumka3TimeStepper(self.pol_index, dtype=numpy.complex128)
 
-class RK4Maker:
+class LSRK4Maker:
     def __call__(self):
-        from hedge.timestep.rk4 import RK4TimeStepper
-        return RK4TimeStepper(dtype=numpy.complex128)
+        from hedge.timestep.runge_kutta import LSRK4TimeStepper
+        return LSRK4TimeStepper(dtype=numpy.complex128)
 
+class ODE23Maker:
+    def __call__(self):
+        from hedge.timestep.runge_kutta import ODE23TimeStepper
+        return ODE23TimeStepper(dtype=numpy.complex128)
+
+class ODE45Maker:
+    def __call__(self):
+        from hedge.timestep.runge_kutta import ODE45TimeStepper
+        return ODE45TimeStepper(dtype=numpy.complex128)
 
 if __name__ == "__main__":
-    from hedge.timestep import RK4TimeStepper
-    from hedge.timestep.ssprk3 import SSPRK3TimeStepper
-
     #sm = RK4TimeStepper
     #sm = ABMaker(5)
     #sm = SSPRK3TimeStepper
@@ -109,11 +115,15 @@ if __name__ == "__main__":
     ylabel("Im $k$")
     grid()
 
-    for pol_i in range(2, -1, -1):
-        plot_stability_region(DumkaMaker(pol_i), 
-                label="Dumka3(%d)" % pol_i, alpha=0.3)
-    #plot_stability_region(RK4Maker(), label="C/K RK4/5", alpha=0.3)
+    #for pol_i in range(2, -1, -1):
+        #plot_stability_region(DumkaMaker(pol_i), 
+                #label="Dumka3(%d)" % pol_i, alpha=0.3)
+    plot_stability_region(LSRK4Maker(), label="C/K RK4", alpha=0.3)
+    plot_stability_region(ODE23Maker(), label="ODE23", alpha=0.3)
+    plot_stability_region(ODE45Maker(), label="ODE45", alpha=0.3)
+
     legend(labelspacing=0.1, borderpad=0.3)
-    savefig("stab-regions.png", dpi=150)
+    #savefig("stab-regions.png", dpi=150)
+    show()
 
 
