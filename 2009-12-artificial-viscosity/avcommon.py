@@ -140,7 +140,7 @@ def make_discr(setup):
 
             from hedge.mesh.generator import make_rect_mesh
             mesh = make_rect_mesh((setup.case.a, 0), (setup.case.b, extent_y), 
-                    periodicity=(setup.case_is_periodic, )*2, 
+                    periodicity=(setup.case.is_periodic, True), 
                     subdivisions=subdiv,
                     max_area=extent_x*extent_y/(2*product(subdiv))
                     )
@@ -165,6 +165,7 @@ def make_discr(setup):
         quad_min_degrees = {}
     else:
         quad_min_degrees = {
+                "quad": setup.quad_min_degree,
                 "gasdyn_vol": setup.quad_min_degree,
                 "gasdyn_face": setup.quad_min_degree,
                 }

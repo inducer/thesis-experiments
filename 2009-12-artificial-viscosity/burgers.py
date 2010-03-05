@@ -286,7 +286,7 @@ def main(flux_type_arg="upwind"):
 
     if hasattr(setup.case, "u_exact"):
         error_quantity = L1Error()
-        logmgr.add_quantity(error_quantity, interval=10)
+        logmgr.add_quantity(error_quantity, interval=50)
 
     logmgr.add_watches(["step.max", "t_sim.max", "l1_u", "t_step.max"])
     # }}}
@@ -389,16 +389,21 @@ def main(flux_type_arg="upwind"):
     # }}}
 
     # {{{ timestep loop -------------------------------------------------------
-    from hedge.timestep import RK4TimeStepper
+    from hedge.timestep.runge_kutta import (
+            LSRK4TimeStepper,
+            ODE45TimeStepper,
+            ODE23TimeStepper)
     from hedge.timestep.dumka3 import Dumka3TimeStepper
     #stepper = RK4TimeStepper()
-    stepper = Dumka3TimeStepper(3, rtol=1e-6)
+    stepper = Dumka3TimeStepper(0, rtol=1e-6)
     #stepper = Dumka3TimeStepper(4)
+    #stepper = ODE23TimeStepper(rtol=1e-6)
+    #stepper = ODE45TimeStepper(rtol=1e-6)
 
     stepper.add_instrumentation(logmgr)
 
     if setup.vis_interval is None:
-        setup.vis_interval = min(1, setup.case.final_time / 100)
+        setup.vis_interval = setup.case.final_time / 30
 
     next_vis_t = 0
     try:
@@ -409,7 +414,7 @@ def main(flux_type_arg="upwind"):
         #stab_fac = 3 # dumka3(4), central
 
         adv_dt = op.estimate_timestep(discr,
-                stepper=RK4TimeStepper(), t=0, fields=u)
+                stepper=LSRK4TimeStepper(), t=0, fields=u)
         next_dt = 0.05 * adv_dt
 
         logmgr.set_constant("adv_dt", adv_dt)

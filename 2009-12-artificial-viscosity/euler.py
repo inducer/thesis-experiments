@@ -248,12 +248,16 @@ class SquareInChannelProblem(object):
 
 
 def make_stepper():
-    #from hedge.timestep import RK4TimeStepper
+    from hedge.timestep.runge_kutta import (
+            LSRK4TimeStepper,
+            ODE45TimeStepper,
+            ODE23TimeStepper)
     from hedge.timestep.dumka3 import Dumka3TimeStepper
-
     #return RK4TimeStepper()
-    return Dumka3TimeStepper(3, rtol=1e-6)
+    #return Dumka3TimeStepper(2, rtol=1e-6)
     #return Dumka3TimeStepper(4)
+    return ODE23TimeStepper(rtol=1e-6)
+    #return ODE45TimeStepper(rtol=1e-6)
 
 
 
@@ -558,7 +562,7 @@ def main(flux_type_arg="upwind"):
     # }}}
 
     # {{{ timestepping loop ---------------------------------------------------
-    from hedge.timestep import RK4TimeStepper
+    from hedge.timestep.runge_kutta import LSRK4TimeStepper
 
     stepper = make_stepper()
     stepper.add_instrumentation(logmgr)
@@ -566,7 +570,7 @@ def main(flux_type_arg="upwind"):
     step = 0
     rhs(0, fields)
     adv_dt = op.estimate_timestep(discr,
-            stepper=RK4TimeStepper(), t=0, max_eigenvalue=max_eigval[0])
+            stepper=LSRK4TimeStepper(), t=0, max_eigenvalue=max_eigval[0])
     logmgr.set_constant("adv_dt", adv_dt)
 
     #fields = pre_smudge_ic(discr, op, bound_sensor, fields, adv_dt, visualize)
