@@ -39,6 +39,8 @@ def generate_sleep_jobs():
 # {{{ queue management --------------------------------------------------------
 
 def manage_queue(job_generator, outfile):
+    job_count = 0
+
     try:
         from os.path import exists
         if exists(outfile):
@@ -70,8 +72,12 @@ def manage_queue(job_generator, outfile):
                 if len(free_ranks) == comm.Get_size() - 1:
                     break
 
+            job_count += 1
             rank, job, result = comm.recv(source=mpi.ANY_SOURCE)
             free_ranks.add(rank)
+
+            if job_count % 50 == 0:
+                print job_count, "done"
 
             for k, v in job.get_parameter_dict().iteritems():
                 parameter_cols[k] = type(v)
