@@ -47,12 +47,12 @@ def generate_method_factories():
 
 
 
-class RealMatrixFactory(FactoryWithParameters):
+class MatrixFactory(FactoryWithParameters):
     __slots__ = ["ratio", "angle", "offset"]
 
     def get_parameter_dict(self):
         res = FactoryWithParameters.get_parameter_dict(self)
-        res["mat_type"] = "realvalued"
+        res["mat_type"] = type(self).__name__
         return res
 
     def get_eigvec_mat(self):
@@ -70,61 +70,47 @@ class RealMatrixFactory(FactoryWithParameters):
 
 
 
-class ComplexConjugateMatrixFactory(FactoryWithParameters):
-    __slots__ = ["complex_arg", "angle", "ev_arg"]
-
-    def get_parameter_dict(self):
-        res = FactoryWithParameters.get_parameter_dict(self)
-        res["mat_type"] = "conjugate"
-        return res
-
-    def get_eigvec_mat(self):
-        from math import cos, sin
-        from cmath import exp
-        b = self.angle
-        c = self.ev_arg
-        return numpy.array([
-            [cos(b)*exp(1j*c), cos(b)*exp(-1j*c)],
-            [sin(b)*exp(-1j*c), sin(b)*exp(1j*c)],
-            ])
+class DecayMatrixFactory(MatrixFactory):
+    __slots__ = []
 
     def __call__(self):
-        from math import cos, sin
-
-        a = self.complex_arg
-        mat = numpy.diag([cos(a) + 1j *sin(a), cos(a) - 1j*sin(a)])
+        mat = numpy.diag([-1, -1*self.ratio])
         evmat = self.get_eigvec_mat()
-        return numpy.real_if_close(
-                numpy.dot(la.solve(evmat, mat), evmat))
+        return numpy.dot(la.solve(evmat, mat), evmat)
 
+class OscillationDecayMatrixFactory(MatrixFactory):
+    __slots__ = []
+
+    def __call__(self):
+        mat = numpy.diag([-1, 1j*self.ratio])
+        evmat = self.get_eigvec_mat()
+        return numpy.dot(la.solve(evmat, mat), evmat)
+
+class OscillationMatrixFactory(MatrixFactory):
+    __slots__ = []
+
+    def __call__(self):
+        mat = numpy.diag([1j, 1j*self.ratio])
+        evmat = self.get_eigvec_mat()
+        return numpy.dot(la.solve(evmat, mat), evmat)
 
 
 
 def generate_matrix_factories():
     from math import pi
 
-    complex_arg_steps = 20
     angle_steps = 20
-    ev_arg_steps = 20
-    for complex_arg in numpy.linspace(0, pi, complex_arg_steps):
-        for angle in numpy.linspace(pi/angle_steps, pi, angle_steps):
-            for ev_arg in numpy.linspace(
-                    pi/ev_arg_steps, pi, ev_arg_steps):
+    offset_steps = 40
+    for angle in numpy.linspace(0, pi, angle_steps, endpoint=False):
+        for offset in numpy.linspace(
+                2*pi/offset_steps, 
+                2*pi, offset_steps, endpoint=False):
+            for ratio in numpy.linspace(0.1, 1, 10):
+                yield DecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
+                yield OscillationMatrixFactory(ratio=ratio, angle=angle, offset=offset)
 
-                yield ComplexConjugateMatrixFactory(
-                        complex_arg=complex_arg, 
-                        angle=angle, 
-                        ev_arg=ev_arg)
-
-    if False:
-        angle_steps = 20
-        offset_steps = 40
-        for ratio in numpy.linspace(0.1, 1, 10):
-            for angle in numpy.linspace(0, pi, angle_steps, endpoint=False):
-                for offset in numpy.linspace(
-                        2*pi/offset_steps, 
-                        2*pi, offset_steps, endpoint=False):
-                    yield RealMatrixFactory(ratio=ratio, angle=angle, offset=offset)
+            for ratio in 10**numpy.linspace(-1, 1, 10):
+                yield OscillationDecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
 
 
 
