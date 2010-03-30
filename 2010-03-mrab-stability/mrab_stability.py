@@ -38,9 +38,9 @@ def generate_method_factories():
     from hedge.timestep.multirate_ab.methods import methods
     from hedge.timestep.stability import approximate_imag_stability_region
 
-    for method in methods.keys()[:1]:
+    for method in methods.keys():
         for order in [3]:
-            for substep_count in [2]:
+            for substep_count in [2, 3, 4]:
                 yield MethodFactory(method=method, meth_order=order, 
                         substep_count=substep_count)
 
@@ -74,7 +74,9 @@ class DecayMatrixFactory(MatrixFactory):
     __slots__ = []
 
     def __call__(self):
-        mat = numpy.diag([-1, -1*self.ratio])
+        vec = numpy.array([-1, -1*self.ratio])
+        vec /= la.norm(vec)
+        mat = numpy.diag(vec)
         evmat = self.get_eigvec_mat()
         return numpy.dot(la.solve(evmat, mat), evmat)
 
@@ -82,7 +84,9 @@ class OscillationDecayMatrixFactory(MatrixFactory):
     __slots__ = []
 
     def __call__(self):
-        mat = numpy.diag([-1, 1j*self.ratio])
+        vec = numpy.array([-1, 1j*self.ratio])
+        vec /= la.norm(vec)
+        mat = numpy.diag(vec)
         evmat = self.get_eigvec_mat()
         return numpy.dot(la.solve(evmat, mat), evmat)
 
@@ -90,7 +94,9 @@ class OscillationMatrixFactory(MatrixFactory):
     __slots__ = []
 
     def __call__(self):
-        mat = numpy.diag([1j, 1j*self.ratio])
+        vec = numpy.array([1j, 1j*self.ratio])
+        vec /= la.norm(vec)
+        mat = numpy.diag(vec)
         evmat = self.get_eigvec_mat()
         return numpy.dot(la.solve(evmat, mat), evmat)
 
@@ -140,10 +146,10 @@ class MRABJob(object):
             def f2s_rhs(t, yf, ys): return mat[1,0] * yf()
             def s2s_rhs(t, yf, ys): return mat[1,1] * ys()
 
-            for i in range(30):
+            for i in range(40):
                 y = stepper(y, i*dt, 
                         (f2f_rhs, s2f_rhs, f2s_rhs, s2s_rhs))
-                if la.norm(y) > 2:
+                if la.norm(y) > 10:
                     return False
 
             return True
