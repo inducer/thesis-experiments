@@ -126,7 +126,7 @@ def main():
 
             return xnew, ynew, z
 
-        @on_trait_change('angle,method,mat_type')
+        @on_trait_change('angle,method,mat_type,substep_count')
         def update_plot(self):
 
             mat_type = all_mat_types[int(self.mat_type)]
