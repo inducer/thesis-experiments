@@ -2,41 +2,7 @@
 import sqlite3 as sqlite
 import numpy
 import numpy.linalg as la
-from time import sleep
-
-def group_by_first(cursor):
-    last = None
-    group = []
-    for row in cursor:
-        if last is None:
-            last = row[0]
-        elif last != row[0]:
-            yield last, group
-            group = []
-            last = row[0]
-
-        group.append(row[1:])
-
-    if group:
-        yield row[0], group
-
-def auto_xy_reshape(cursor):
-    x_values = []
-    y_values = []
-    z_values = []
-
-    for x, y, v in cursor:
-        z_values.append(v)
-        if x not in x_values:
-            x_values.append(x)
-
-        if y not in y_values:
-            y_values.append(y)
-
-    z_values = numpy.array(z_values).reshape(
-            (len(x_values), len(y_values)), order="C")
-
-    return x_values, y_values, z_values
+from plot_tools import auto_xy_reshape, unwrap_list
 
 
 
@@ -52,11 +18,6 @@ from enthought.mayavi.core.ui.mayavi_scene import MayaviScene
 
 
 
-def unwrap_list(iterable):
-    return list(row[0] for row in iterable)
-
-
-
 def main():
     db_conn = sqlite.connect("output.dat", timeout=30)
 
@@ -66,9 +27,7 @@ def main():
             db_conn.execute("select distinct method from data"))
     all_mat_types = unwrap_list(
             db_conn.execute("select distinct mat_type from data"))
-    print all_mat_types
     all_mat_types[0:2] = all_mat_types[1::-1]
-    print all_mat_types
     all_substep_counts = unwrap_list(
             db_conn.execute("select distinct substep_count from data"))
 
@@ -105,7 +64,7 @@ def main():
             import mrab_stability
             factory = getattr(mrab_stability, mat_type)
             print "------------------------------"
-            print mat_type, method, substep_count, angle
+            print mat_type, method, substep_count, angle/numpy.pi
             if x:
                 ratio = x[0]
                 print "matrices for ratio=%g" % ratio
