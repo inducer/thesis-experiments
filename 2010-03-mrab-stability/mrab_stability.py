@@ -98,7 +98,7 @@ class OscillationMatrixFactory(MatrixFactory):
         vec /= la.norm(vec)
         mat = numpy.diag(vec)
         evmat = self.get_eigvec_mat()
-        return numpy.dot(la.solve(evmat, mat), evmat)
+        return numpy.dot(evmat, leftsolve(evmat, mat))
 
 
 
