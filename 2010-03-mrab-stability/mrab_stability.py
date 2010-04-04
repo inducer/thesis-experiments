@@ -53,7 +53,7 @@ def generate_method_factories_hires():
 
     for method in ["Fq", "Ssf", "Sr"]:
         for order in [3]:
-            for substep_count in [1, 2, 5, 10]:
+            for substep_count in [2, 5, 10]:
                 yield MethodFactory(method=method, meth_order=order, 
                         substep_count=substep_count)
 
@@ -88,7 +88,6 @@ class DecayMatrixFactory(MatrixFactory):
 
     def __call__(self):
         vec = numpy.array([-1, -1*self.ratio])
-        vec /= la.norm(vec)
         mat = numpy.diag(vec)
         evmat = self.get_eigvec_mat()
         return numpy.dot(la.solve(evmat, mat), evmat)
@@ -98,7 +97,6 @@ class DecayOscillationMatrixFactory(MatrixFactory):
 
     def __call__(self):
         vec = numpy.array([-1, 1j*self.ratio])
-        vec /= la.norm(vec)
         mat = numpy.diag(vec)
         evmat = self.get_eigvec_mat()
         return numpy.dot(la.solve(evmat, mat), evmat)
@@ -108,7 +106,6 @@ class OscillationDecayMatrixFactory(MatrixFactory):
 
     def __call__(self):
         vec = numpy.array([1j, -1*self.ratio])
-        vec /= la.norm(vec)
         mat = numpy.diag(vec)
         evmat = self.get_eigvec_mat()
         return numpy.dot(la.solve(evmat, mat), evmat)
@@ -118,9 +115,9 @@ class OscillationMatrixFactory(MatrixFactory):
 
     def __call__(self):
         vec = numpy.array([1j, 1j*self.ratio])
-        vec /= la.norm(vec)
         mat = numpy.diag(vec)
         evmat = self.get_eigvec_mat()
+        from hedge.tools.linalg import leftsolve
         return numpy.dot(evmat, leftsolve(evmat, mat))
 
 
@@ -156,6 +153,7 @@ def generate_matrix_factories_hires():
                 yield DecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
                 yield OscillationMatrixFactory(ratio=ratio, angle=angle, offset=offset)
                 yield OscillationDecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
+                yield DecayOscillationMatrixFactory(ratio=ratio, angle=angle, offset=offset)
 
 
 class MRABJob(object):
