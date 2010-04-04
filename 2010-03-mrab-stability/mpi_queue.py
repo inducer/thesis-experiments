@@ -76,7 +76,7 @@ def manage_queue(job_generator, outfile):
             rank, job, result = comm.recv(source=mpi.ANY_SOURCE)
             free_ranks.add(rank)
 
-            if job_count % 50 == 0:
+            if job_count % 250 == 0:
                 print job_count, "done"
 
             for k, v in job.get_parameter_dict().iteritems():

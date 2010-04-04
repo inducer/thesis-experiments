@@ -47,6 +47,19 @@ def generate_method_factories():
 
 
 
+def generate_method_factories_hires():
+    from hedge.timestep.multirate_ab.methods import methods
+    from hedge.timestep.stability import approximate_imag_stability_region
+
+    for method in ["Fq", "Ssf", "Sr"]:
+        for order in [3]:
+            for substep_count in [1, 2, 5, 10]:
+                yield MethodFactory(method=method, meth_order=order, 
+                        substep_count=substep_count)
+
+
+
+
 class MatrixFactory(FactoryWithParameters):
     __slots__ = ["ratio", "angle", "offset"]
 
@@ -119,6 +132,21 @@ def generate_matrix_factories():
                 yield OscillationDecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
 
 
+
+
+
+def generate_matrix_factories_hires():
+    from math import pi
+
+    offset_steps = 200
+    for angle in [0, 0.05, 0.1]:
+        for offset in numpy.linspace(
+                2*pi/offset_steps, 
+                2*pi, offset_steps, endpoint=False):
+            for ratio in numpy.linspace(0.1, 1, 100):
+                yield DecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
+                yield OscillationMatrixFactory(ratio=ratio, angle=angle, offset=offset)
+                yield OscillationDecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
 
 
 class MRABJob(object):
@@ -203,7 +231,14 @@ def generate_mrab_jobs():
 
 
 
+def generate_mrab_jobs_hires():
+    for method_fac in generate_method_factories_hires():
+        for matrix_fac in generate_matrix_factories_hires():
+            yield MRABJob(method_fac, matrix_fac)
+
+
+
 if __name__ == "__main__":
     from mpi_queue import enter_queue_manager
-    #enter_queue_manager(generate_sleep_jobs, "output.dat")
-    enter_queue_manager(generate_mrab_jobs, "output.dat")
+    #enter_queue_manager(generate_mrab_jobs, "output.dat")
+    enter_queue_manager(generate_mrab_jobs_hires, "output-hires.dat")
