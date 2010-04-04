@@ -93,11 +93,21 @@ class DecayMatrixFactory(MatrixFactory):
         evmat = self.get_eigvec_mat()
         return numpy.dot(la.solve(evmat, mat), evmat)
 
-class OscillationDecayMatrixFactory(MatrixFactory):
+class DecayOscillationMatrixFactory(MatrixFactory):
     __slots__ = []
 
     def __call__(self):
         vec = numpy.array([-1, 1j*self.ratio])
+        vec /= la.norm(vec)
+        mat = numpy.diag(vec)
+        evmat = self.get_eigvec_mat()
+        return numpy.dot(la.solve(evmat, mat), evmat)
+
+class OscillationDecayMatrixFactory(MatrixFactory):
+    __slots__ = []
+
+    def __call__(self):
+        vec = numpy.array([1j, -1*self.ratio])
         vec /= la.norm(vec)
         mat = numpy.diag(vec)
         evmat = self.get_eigvec_mat()
@@ -111,7 +121,7 @@ class OscillationMatrixFactory(MatrixFactory):
         vec /= la.norm(vec)
         mat = numpy.diag(vec)
         evmat = self.get_eigvec_mat()
-        return numpy.dot(la.solve(evmat, mat), evmat)
+        return numpy.dot(evmat, leftsolve(evmat, mat))
 
 
 
@@ -127,9 +137,8 @@ def generate_matrix_factories():
             for ratio in numpy.linspace(0.1, 1, 10):
                 yield DecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
                 yield OscillationMatrixFactory(ratio=ratio, angle=angle, offset=offset)
-
-            for ratio in 10**numpy.linspace(-1, 1, 10):
                 yield OscillationDecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
+                yield DecayOscillationMatrixFactory(ratio=ratio, angle=angle, offset=offset)
 
 
 
