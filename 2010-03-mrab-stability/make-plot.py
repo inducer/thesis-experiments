@@ -74,7 +74,7 @@ def main():
                     print repr(factory(
                             ratio=ratio,
                             angle=angle,
-                            offset=offset)())
+                            offset=offset)()), offset/numpy.pi
             else:
                 print "EMPTY"
 
