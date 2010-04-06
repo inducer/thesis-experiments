@@ -24,10 +24,29 @@ class TwoJumpTestCase(object):
 
 
 
+class FunnySineTestCase(object):
+    a = -2
+    b = 2
+    is_periodic = True
+    final_time = 10
+
+    def u0(self, x):
+        if abs(x) < 1/3:
+            return sin(4*pi*x)
+        else:
+            return sin(6*pi*x)
+
+    def u_exact(self, x, t):
+        return self.u0(((x-self.a)-t) % (self.b-self.a) + self.a)
+
+
+
+
 def main(flux_type_arg="upwind"):
     from avcommon import make_ui, make_discr
     ui = make_ui(cases=[
         TwoJumpTestCase,
+        FunnySineTestCase,
         ])
     setup = ui.gather()
 
@@ -320,6 +339,11 @@ def main(flux_type_arg="upwind"):
 
             if do_vis:
                 visualize("fld-%04d" % step, t, u)
+
+            # shorten timestep to hit vis times exactly
+            if t + next_dt > next_vis_t:
+                next_dt = next_vis_t - t
+                assert next_dt >= 0
 
             u, t, taken_dt, next_dt = stepper(u, t, next_dt, rhs)
 
