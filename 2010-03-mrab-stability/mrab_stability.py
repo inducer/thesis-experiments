@@ -145,7 +145,7 @@ def generate_matrix_factories_hires():
     from math import pi
 
     offset_steps = 200
-    for angle in [0, 0.05, 0.1]:
+    for angle in [0, 0.05*pi, 0.1*pi]:
         for offset in numpy.linspace(
                 2*pi/offset_steps, 
                 2*pi, offset_steps, endpoint=False):
