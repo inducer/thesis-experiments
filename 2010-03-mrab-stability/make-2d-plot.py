@@ -81,7 +81,8 @@ def make_stabplot(db_conn, mat_type, angle, method, substep_count):
 
 
 if __name__ == "__main__":
-    db_conn = sqlite.connect("output.dat", timeout=30)
+    import sys
+    db_conn = sqlite.connect(sys.argv[1], timeout=30)
 
     all_angles = unwrap_list(
             db_conn.execute("select distinct angle from data"))
@@ -95,8 +96,8 @@ if __name__ == "__main__":
             #db_conn.execute("select distinct substep_count from data"))
 
     make_stabplot(db_conn,
-            "OscillationMatrixFactory",
-            all_angles[0],
-            "Fsr", 2)
+            "DecayMatrixFactory",
+            all_angles[1],
+            "Ssf", 2)
 
     show()

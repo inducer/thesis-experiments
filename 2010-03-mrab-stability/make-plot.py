@@ -19,7 +19,8 @@ from enthought.mayavi.core.ui.mayavi_scene import MayaviScene
 
 
 def main():
-    db_conn = sqlite.connect("output.dat", timeout=30)
+    import sys
+    db_conn = sqlite.connect(sys.argv[1], timeout=30)
 
     all_angles = unwrap_list(
             db_conn.execute("select distinct angle from data"))
@@ -69,7 +70,7 @@ def main():
                 ratio = x[0]
                 print "matrices for ratio=%g" % ratio
                 #for ratio in x[::4]:
-                for offset in y[::2]:
+                for offset in y[::8]:
                     print repr(factory(
                             ratio=ratio,
                             angle=angle,
