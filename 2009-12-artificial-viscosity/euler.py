@@ -440,7 +440,7 @@ def main(flux_type_arg="upwind"):
                     l1_norm(vis_discr, op.rho_u(vis_fields)-op.rho_u(exact_fields)),
                     ]
 
-    if hasattr(setup.case, "make_exact_func"):
+    if setup.vis_exact and hasattr(setup.case, "make_exact_func"):
         error_quantity = L1Error()
         logmgr.add_quantity(error_quantity, interval=40)
 
@@ -523,7 +523,7 @@ def main(flux_type_arg="upwind"):
                     ("u"+suffix, to_vis(u)),
                     ("p"+suffix, to_vis(p)) ]
 
-        if hasattr(setup.case, "make_exact_func"):
+        if setup.vis_exact and hasattr(setup.case, "make_exact_func"):
             exact_func = setup.case.make_exact_func(t)
             exact_fields = make_obj_array(discr.interpolate_volume_function(
                         exact_func))
@@ -601,7 +601,13 @@ def main(flux_type_arg="upwind"):
             if do_vis:
                 visualize("euler-%06d" % step, t, fields)
 
+            # shorten timestep to hit vis times exactly
+            if t + next_dt > next_vis_t:
+                next_dt = next_vis_t - t
+                assert next_dt >= 0
+
             fields, t, taken_dt, next_dt = stepper(fields, t, next_dt, rhs)
+
 
     finally:
         discr.close()

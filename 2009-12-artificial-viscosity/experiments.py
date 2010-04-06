@@ -125,6 +125,76 @@ def euler_sod_convergence():
                     job.submit()
 
 
+def euler_sod_convergence_in_k():
+    O = ConstructorPlaceholder
+    timestamp = get_timestamp()
+
+    for order in [4]:
+        for n_elements in [20, 40, 80, 160, 320, 640, 1280]:
+
+            for viscosity_scale in [0.4]:
+                for smoother in [
+                        #O("TriBlobSmoother", use_max=False),
+                        O("VertexwiseMaxSmoother"),
+                        ]:
+                    job = BatchJob(
+                            "sod-kconv-$DATE/N%d-K%d-v%f-%s" % (
+                                order,
+                                n_elements,
+                                viscosity_scale,
+                                cn_with_args(smoother),
+                                ),
+                            "euler.py",
+                            timestamp=timestamp,
+                            aux_files=["smoother.py", "avcommon.py", "sod.py",
+                                "euler_airplane.py"])
+
+                    job.write_setup([
+                        "order = %d" % order,
+                        "n_elements = %d" % n_elements,
+                        "viscosity_scale = %r" % viscosity_scale,
+                        "vis_interval = 0.01",
+                        "case = SodProblem()",
+                        "smoother = %s" % smoother,
+                        #"vis_exact = False",
+                        ])
+                    job.submit()
+
+
+
+
+def advection_convergence_in_k():
+    O = ConstructorPlaceholder
+    timestamp = get_timestamp()
+
+    for order in [4]:
+        for n_elements in [20, 40, 80, 160, 320, 640, 1280]:
+        #for n_elements in [40]:
+            for viscosity_scale in [0.2]:
+                for smoother in [
+                        O("VertexwiseMaxSmoother"),
+                        ]:
+                    job = BatchJob(
+                            "adv-kconv-$DATE/N%d-K%d-v%f-%s" % (
+                                order,
+                                n_elements,
+                                viscosity_scale,
+                                cn_with_args(smoother),
+                                ),
+                            "advection.py",
+                            timestamp=timestamp,
+                            aux_files=["smoother.py", "avcommon.py"])
+
+                    job.write_setup([
+                        "order = %d" % order,
+                        "n_elements = %d" % n_elements,
+                        "viscosity_scale = %r" % viscosity_scale,
+                        "vis_interval = 0.5",
+                        "case = FunnySineTestCase()",
+                        "smoother = %s" % smoother,
+                        #"vis_exact = False",
+                        ])
+                    job.submit()
 
 import sys
 exec sys.argv[1]

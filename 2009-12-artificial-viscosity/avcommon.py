@@ -28,6 +28,7 @@ def make_ui(cases):
 
         "viscosity_scale": 1,
 
+        "vis_exact": True,
         "extra_vis": False,
         }
 
