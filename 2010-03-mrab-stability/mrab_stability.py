@@ -6,6 +6,7 @@ import numpy.linalg as la
 
 
 
+# {{{ utilities ---------------------------------------------------------------
 class FactoryWithParameters(Record):
     __slots__ = []
 
@@ -18,48 +19,59 @@ class FactoryWithParameters(Record):
                 pass
         return result
 
-class MethodFactory(FactoryWithParameters):
-    __slots__ = ["method", "substep_count", "meth_order"]
+class StabilityTester(object):
+    def __init__(self, method_fac, matrix_fac):
+        self.method_fac = method_fac
+        self.matrix_fac = matrix_fac
+        self.matrix = matrix_fac()
 
-    def __call__(self, dt):
-        from hedge.timestep.multirate_ab import \
-                TwoRateAdamsBashforthTimeStepper
-        return TwoRateAdamsBashforthTimeStepper(
-                method=self.method,
-                large_dt=dt,
-                substep_count=self.substep_count,
-                order=self.meth_order)
+    def get_parameter_dict(self):
+        result = {}
+        result.update(self.method_fac.get_parameter_dict())
+        result.update(self.matrix_fac.get_parameter_dict())
+        return result
+
+    def refine(self, stable, unstable):
+        assert self.is_stable(stable)
+        assert not self.is_stable(unstable)
+        while abs(stable-unstable) > self.prec:
+            mid = (stable+unstable)/2
+            if self.is_stable(mid):
+                stable = mid
+            else:
+                unstable = mid
+        else:
+            return stable
+
+    def find_stable_dt(self):
+        dt = 0.1
+
+        if self.is_stable(dt):
+            dt *= 2
+            while self.is_stable(dt):
+                dt *= 2
+
+                if dt > 2**8:
+                    return dt
+            return self.refine(dt/2, dt)
+        else:
+            dt /= 2
+            while not self.is_stable(dt):
+                dt /= 2
+
+                if dt < self.prec:
+                    return dt
+            return self.refine(dt, dt*2)
+
+    def __call__(self):
+        return { "dt": self.find_stable_dt() }
 
 
 
 
+# }}}
 
-def generate_method_factories():
-    from hedge.timestep.multirate_ab.methods import methods
-    from hedge.timestep.stability import approximate_imag_stability_region
-
-    for method in methods.keys():
-        for order in [3]:
-            for substep_count in [2, 3, 4]:
-                yield MethodFactory(method=method, meth_order=order, 
-                        substep_count=substep_count)
-
-
-
-
-def generate_method_factories_hires():
-    from hedge.timestep.multirate_ab.methods import methods
-    from hedge.timestep.stability import approximate_imag_stability_region
-
-    for method in ["Fq", "Ssf", "Sr"]:
-        for order in [3]:
-            for substep_count in [2, 5, 10]:
-                yield MethodFactory(method=method, meth_order=order, 
-                        substep_count=substep_count)
-
-
-
-
+# {{{ matrices ----------------------------------------------------------------
 class MatrixFactory(FactoryWithParameters):
     __slots__ = ["ratio", "angle", "offset"]
 
@@ -155,78 +167,71 @@ def generate_matrix_factories_hires():
                 yield OscillationDecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
                 yield DecayOscillationMatrixFactory(ratio=ratio, angle=angle, offset=offset)
 
+# }}}
 
-class MRABJob(object):
-    def __init__(self, method_fac, matrix_fac):
-        self.method_fac = method_fac
-        self.matrix_fac = matrix_fac
+# {{{ MRAB --------------------------------------------------------------------
 
-    def get_parameter_dict(self):
-        result = {}
-        result.update(self.method_fac.get_parameter_dict())
-        result.update(self.matrix_fac.get_parameter_dict())
-        return result
+class MethodFactory(FactoryWithParameters):
+    __slots__ = ["method", "substep_count", "meth_order"]
 
-    def __call__(self):
-        mat = self.matrix_fac()
+    def __call__(self, dt):
+        from hedge.timestep.multirate_ab import \
+                TwoRateAdamsBashforthTimeStepper
+        return TwoRateAdamsBashforthTimeStepper(
+                method=self.method,
+                large_dt=dt,
+                substep_count=self.substep_count,
+                order=self.meth_order)
 
-        def is_stable(dt):
-            stepper = self.method_fac(dt)
+def generate_method_factories():
+    from hedge.timestep.multirate_ab.methods import methods
+    from hedge.timestep.stability import approximate_imag_stability_region
 
-            y = numpy.array([1,1], dtype=numpy.float64)
-            y /= la.norm(y)
+    for method in methods.keys():
+        for order in [3]:
+            for substep_count in [2, 3, 4]:
+                yield MethodFactory(method=method, meth_order=order, 
+                        substep_count=substep_count)
 
-            def f2f_rhs(t, yf, ys): return mat[0,0] * yf()
-            def s2f_rhs(t, yf, ys): return mat[0,1] * ys()
-            def f2s_rhs(t, yf, ys): return mat[1,0] * yf()
-            def s2s_rhs(t, yf, ys): return mat[1,1] * ys()
 
-            for i in range(40):
-                y = stepper(y, i*dt, 
-                        (f2f_rhs, s2f_rhs, f2s_rhs, s2s_rhs))
-                if la.norm(y) > 10:
-                    return False
 
-            return True
 
-        prec = 1e-4
+def generate_method_factories_hires():
+    from hedge.timestep.multirate_ab.methods import methods
+    from hedge.timestep.stability import approximate_imag_stability_region
 
-        def refine(stable, unstable):
-            assert is_stable(stable)
-            assert not is_stable(unstable)
-            while abs(stable-unstable) > prec:
-                mid = (stable+unstable)/2
-                if is_stable(mid):
-                    stable = mid
-                else:
-                    unstable = mid
-            else:
-                return stable
+    for method in ["Fq", "Ssf", "Sr"]:
+        for order in [3]:
+            for substep_count in [2, 5, 10]:
+                yield MethodFactory(method=method, meth_order=order, 
+                        substep_count=substep_count)
 
-        def find_stable_dt():
-            dt = 0.1
 
-            if is_stable(dt):
-                dt *= 2
-                while is_stable(dt):
-                    dt *= 2
 
-                    if dt > 2**8:
-                        return dt
-                return refine(dt/2, dt)
-            else:
-                dt /= 2
-                while not is_stable(dt):
-                    dt /= 2
 
-                    if dt < prec:
-                        return dt
-                return refine(dt, dt*2)
 
-        stable_dt = find_stable_dt()
-        return {
-                "dt": stable_dt
-                }
+
+class MRABJob(StabilityTester):
+    prec = 1e-4
+
+    def is_stable(self, dt):
+        stepper = self.method_fac(dt)
+
+        y = numpy.array([1,1], dtype=numpy.float64)
+        y /= la.norm(y)
+
+        def f2f_rhs(t, yf, ys): return mat[0,0] * yf()
+        def s2f_rhs(t, yf, ys): return mat[0,1] * ys()
+        def f2s_rhs(t, yf, ys): return mat[1,0] * yf()
+        def s2s_rhs(t, yf, ys): return mat[1,1] * ys()
+
+        for i in range(40):
+            y = stepper(y, i*dt, 
+                    (f2f_rhs, s2f_rhs, f2s_rhs, s2s_rhs))
+            if la.norm(y) > 10:
+                return False
+
+        return True
 
 
 
@@ -243,9 +248,56 @@ def generate_mrab_jobs_hires():
         for matrix_fac in generate_matrix_factories_hires():
             yield MRABJob(method_fac, matrix_fac)
 
+# }}}
 
+# {{{ single-rate reference ---------------------------------------------------
+class SRABMethodFactory(FactoryWithParameters):
+    __slots__ = ["method", "substep_count", "meth_order"]
+
+    def __call__(self):
+        from hedge.timestep.ab import AdamsBashforthTimeStepper
+        return AdamsBashforthTimeStepper(order=self.meth_order,
+                dtype=numpy.complex128)
+
+
+
+
+class SRABJob(StabilityTester):
+    prec = 1e-4
+
+    def is_stable(self, dt):
+        stepper = self.method_fac()
+
+        y = numpy.array([1,1], dtype=numpy.complex128)
+        y /= la.norm(y)
+
+        def rhs(t, y):
+            return numpy.dot(self.matrix, y)
+
+        for i in range(40):
+            y = stepper(y, i*dt, dt, rhs)
+            if la.norm(y) > 10:
+                return False
+
+        return True
+
+
+
+
+def generate_srab_jobs():
+    for method_fac in [SRABMethodFactory(method="SRAB", substep_count=1, meth_order=3)]:
+        for matrix_fac in generate_matrix_factories():
+            yield SRABJob(method_fac, matrix_fac)
+
+# }}}
 
 if __name__ == "__main__":
+    from pytools.prefork import enable_prefork
+    enable_prefork()
+
     from mpi_queue import enter_queue_manager
     #enter_queue_manager(generate_mrab_jobs, "output.dat")
-    enter_queue_manager(generate_mrab_jobs_hires, "output-hires.dat")
+    #enter_queue_manager(generate_mrab_jobs_hires, "output-hires.dat")
+    enter_queue_manager(generate_srab_jobs, "output-srab.dat")
+
+# vim: foldmethod=marker
