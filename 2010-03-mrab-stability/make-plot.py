@@ -31,6 +31,8 @@ def main():
     all_mat_types[0:2] = all_mat_types[1::-1]
     all_substep_counts = unwrap_list(
             db_conn.execute("select distinct substep_count from data"))
+    all_stable_steps = unwrap_list(
+            db_conn.execute("select distinct stable_steps from data"))
 
     class Visualization(HasTraits):
         scene = Instance(MlabSceneModel, ())
@@ -58,8 +60,9 @@ def main():
                     "select ratio, offset, dt from data"
                     " where method=? and angle=?"
                     " and mat_type=? and substep_count=?"
+                    " and offset <= ?+1e-10"
                     " order by ratio, offset",
-                    (method, angle, mat_type, substep_count))
+                    (method, angle, mat_type, substep_count, numpy.pi))
             x, y, z = auto_xy_reshape(qry)
 
             import mrab_stability
@@ -69,8 +72,9 @@ def main():
             if x:
                 ratio = x[0]
                 print "matrices for ratio=%g" % ratio
-                #for ratio in x[::4]:
-                for offset in y[::8]:
+
+                offset_step = max(len(y)//20, 1)
+                for offset in y[::offset_step]:
                     print repr(factory(
                             ratio=ratio,
                             angle=angle,
