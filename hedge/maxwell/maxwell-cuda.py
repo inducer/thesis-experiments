@@ -45,8 +45,8 @@ def main():
     options, args = parser.parse_args()
     assert not args
 
-    from hedge.element import TetrahedralElement
-    from hedge.mesh import make_ball_mesh, make_cylinder_mesh, make_box_mesh
+    from hedge.mesh.generator import \
+            make_ball_mesh, make_cylinder_mesh, make_box_mesh
     from hedge.visualization import \
             VtkVisualizer, \
             SiloVisualizer, \
@@ -146,13 +146,6 @@ def main():
     boxed_fields = [discr.convert_volume(to_obj_array(mode(discr)
         .real.astype(discr.default_scalar_type)), kind=discr.compute_kind)]
 
-    dt = discr.dt_factor(op.max_eigenvalue())
-    if options.steps is None:
-        nsteps = int(options.final_time/dt)+1
-        dt = options.final_time/nsteps
-    else:
-        nsteps = options.steps
-
     boxed_t = [0]
 
     # diagnostics setup ---------------------------------------------------
@@ -180,22 +173,19 @@ def main():
 
     add_run_info(logmgr)
     add_general_quantities(logmgr)
-    add_simulation_quantities(logmgr, dt)
+    add_simulation_quantities(logmgr)
     discr.add_instrumentation(logmgr)
 
-    if options.cpu:
-        from hedge.timestep import RK4TimeStepper
-    else:
-        from hedge.backends.cuda.tools import RK4TimeStepper
-
-    stepper = RK4TimeStepper()
+    from hedge.timestep.runge_kutta import LSRK4TimeStepper
+    stepper = LSRK4TimeStepper(dtype=discr.default_scalar_type,
+            vector_primitive_factory=discr.get_vector_primitive_factory())
     stepper.add_instrumentation(logmgr)
 
-    logmgr.add_watches(["step.loc", "t_sim.loc", "t_step.loc"])
+    logmgr.add_watches(["step.loc", "t_sim.loc", "t_step.loc", "t_2step.loc"])
     if options.cpu:
         if not options.local_watches:
             logmgr.add_watches([
-                ("flops/s", "(n_flops_gather.sum+n_flops_lift.sum+n_flops_mass.sum+n_flops_diff.sum)"
+                ("flops/s", "(n_flops_gather.sum+n_flops_lift.sum+n_flops_el_local.sum+n_flops_diff.sum)"
                 #"/(t_gather+t_lift+t_diff)"
                 "/t_step.max"
                 )
@@ -209,7 +199,7 @@ def main():
         else:
             logmgr.add_watches([
             ("t_compute", "t_diff.max+t_gather.max+t_el_local.max+t_rk4.max+t_vector_math.max"),
-            ("flops/s", "(n_flops_gather.sum+n_flops_lift.sum+n_flops_mass.sum+n_flops_diff.sum+n_flops_vector_math.sum+n_flops_rk4.sum)"
+            ("flops/s", "(n_flops_gather.sum+n_flops_lift.sum+n_flops_el_local.sum+n_flops_diff.sum+n_flops_vector_math.sum+n_flops_rk4.sum)"
             #"/(t_gather.max+t_el_local.max+t_diff.max+t_vector_math.max+t_rk4.max)"
             "/t_step.max"
             )
@@ -223,12 +213,16 @@ def main():
 
     rhs = op.bind(discr)
 
-    import gc
-
     def timestep_loop():
-        for step in range(nsteps):
-            logmgr.tick()
+        from hedge.timestep import times_and_steps
+        step_it = times_and_steps(
+                final_time=options.final_time, 
+                max_steps=options.steps,
+                logmgr=logmgr,
+                max_dt_getter=lambda t: op.estimate_timestep(discr,
+                    stepper=stepper, t=t, fields=boxed_fields[0]))
 
+        for step, t, dt in step_it:
             if options.vis_interval and step % options.vis_interval == 0:
                 e, h = op.split_eh(boxed_fields[0])
                 visf = vis.make_file("em-%d-%04d" % (options.order, step))
@@ -236,11 +230,11 @@ def main():
                     ("e", discr.convert_volume(e, kind="numpy")), 
                     ("h", discr.convert_volume(h, kind="numpy")), 
                     ],
-                    time=boxed_t[0], step=step)
+                    time=t, step=step)
                 visf.close()
 
-            boxed_fields[0] = stepper(boxed_fields[0], boxed_t[0], dt, rhs)
-            boxed_t[0] += dt
+            boxed_fields[0] = stepper(boxed_fields[0], t, dt, rhs)
+            boxed_t[0] = t
 
     if options.profile:
         from cProfile import Profile
