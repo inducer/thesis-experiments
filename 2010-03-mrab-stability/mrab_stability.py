@@ -20,13 +20,14 @@ class FactoryWithParameters(Record):
         return result
 
 class StabilityTester(object):
-    def __init__(self, method_fac, matrix_fac):
+    def __init__(self, method_fac, matrix_fac, stable_steps):
         self.method_fac = method_fac
         self.matrix_fac = matrix_fac
         self.matrix = matrix_fac()
+        self.stable_steps = stable_steps
 
     def get_parameter_dict(self):
-        result = {}
+        result = {"stable_steps": self.stable_steps}
         result.update(self.method_fac.get_parameter_dict())
         result.update(self.matrix_fac.get_parameter_dict())
         return result
@@ -138,11 +139,11 @@ def generate_matrix_factories():
     from math import pi
 
     angle_steps = 20
-    offset_steps = 40
+    offset_steps = 20
     for angle in numpy.linspace(0, pi, angle_steps, endpoint=False):
         for offset in numpy.linspace(
-                2*pi/offset_steps, 
-                2*pi, offset_steps, endpoint=False):
+                pi/offset_steps, 
+                pi, offset_steps, endpoint=False):
             for ratio in numpy.linspace(0.1, 1, 10):
                 yield DecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
                 yield OscillationMatrixFactory(ratio=ratio, angle=angle, offset=offset)
@@ -156,11 +157,11 @@ def generate_matrix_factories():
 def generate_matrix_factories_hires():
     from math import pi
 
-    offset_steps = 200
+    offset_steps = 100
     for angle in [0, 0.05*pi, 0.1*pi]:
         for offset in numpy.linspace(
-                2*pi/offset_steps, 
-                2*pi, offset_steps, endpoint=False):
+                pi/offset_steps, 
+                pi, offset_steps, endpoint=False):
             for ratio in numpy.linspace(0.1, 1, 100):
                 yield DecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
                 yield OscillationMatrixFactory(ratio=ratio, angle=angle, offset=offset)
@@ -216,6 +217,7 @@ class MRABJob(StabilityTester):
 
     def is_stable(self, dt):
         stepper = self.method_fac(dt)
+        mat = self.matrix
 
         y = numpy.array([1,1], dtype=numpy.float64)
         y /= la.norm(y)
@@ -225,7 +227,7 @@ class MRABJob(StabilityTester):
         def f2s_rhs(t, yf, ys): return mat[1,0] * yf()
         def s2s_rhs(t, yf, ys): return mat[1,1] * ys()
 
-        for i in range(40):
+        for i in range(self.stable_steps):
             y = stepper(y, i*dt, 
                     (f2f_rhs, s2f_rhs, f2s_rhs, s2s_rhs))
             if la.norm(y) > 10:
@@ -238,7 +240,7 @@ class MRABJob(StabilityTester):
 def generate_mrab_jobs():
     for method_fac in generate_method_factories():
         for matrix_fac in generate_matrix_factories():
-            yield MRABJob(method_fac, matrix_fac)
+            yield MRABJob(method_fac, matrix_fac, 120)
 
 
 
@@ -246,7 +248,31 @@ def generate_mrab_jobs():
 def generate_mrab_jobs_hires():
     for method_fac in generate_method_factories_hires():
         for matrix_fac in generate_matrix_factories_hires():
-            yield MRABJob(method_fac, matrix_fac)
+            yield MRABJob(method_fac, matrix_fac, 120)
+
+
+
+
+def generate_mrab_jobs_step_verify():
+    from math import pi
+
+    def my_generate_matrix_factories():
+
+        offset_steps = 20
+        for angle in [0.05*pi]:
+            for offset in numpy.linspace(
+                    pi/offset_steps, 
+                    pi, offset_steps, endpoint=False):
+                for ratio in numpy.linspace(0.1, 1, 10):
+                    yield DecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
+                    yield OscillationMatrixFactory(ratio=ratio, angle=angle, offset=offset)
+                    yield OscillationDecayMatrixFactory(ratio=ratio, angle=angle, offset=offset)
+                    yield DecayOscillationMatrixFactory(ratio=ratio, angle=angle, offset=offset)
+
+    for method_fac in list(generate_method_factories())[:1]:
+        for matrix_fac in my_generate_matrix_factories():
+            for stable_steps in [40, 80, 120]:
+                yield MRABJob(method_fac, matrix_fac, stable_steps)
 
 # }}}
 
@@ -274,7 +300,7 @@ class SRABJob(StabilityTester):
         def rhs(t, y):
             return numpy.dot(self.matrix, y)
 
-        for i in range(40):
+        for i in range(self.stable_steps):
             y = stepper(y, i*dt, dt, rhs)
             if la.norm(y) > 10:
                 return False
@@ -287,7 +313,7 @@ class SRABJob(StabilityTester):
 def generate_srab_jobs():
     for method_fac in [SRABMethodFactory(method="SRAB", substep_count=1, meth_order=3)]:
         for matrix_fac in generate_matrix_factories():
-            yield SRABJob(method_fac, matrix_fac)
+            yield SRABJob(method_fac, matrix_fac, 120)
 
 # }}}
 
@@ -296,8 +322,9 @@ if __name__ == "__main__":
     enable_prefork()
 
     from mpi_queue import enter_queue_manager
-    #enter_queue_manager(generate_mrab_jobs, "output.dat")
-    #enter_queue_manager(generate_mrab_jobs_hires, "output-hires.dat")
     enter_queue_manager(generate_srab_jobs, "output-srab.dat")
+    enter_queue_manager(generate_mrab_jobs, "output.dat")
+    enter_queue_manager(generate_mrab_jobs_hires, "output-hires.dat")
+    #enter_queue_manager(generate_mrab_jobs_step_verify, "output-step.dat")
 
 # vim: foldmethod=marker
