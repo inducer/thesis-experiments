@@ -185,7 +185,6 @@ class MethodFactory(FactoryWithParameters):
 
 def generate_method_factories():
     from hedge.timestep.multirate_ab.methods import methods
-    from hedge.timestep.stability import approximate_imag_stability_region
 
     for method in methods.keys():
         for order in [3]:
@@ -198,7 +197,6 @@ def generate_method_factories():
 
 def generate_method_factories_hires():
     from hedge.timestep.multirate_ab.methods import methods
-    from hedge.timestep.stability import approximate_imag_stability_region
 
     for method in ["Fq", "Ssf", "Sr"]:
         for order in [3]:
