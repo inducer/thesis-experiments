@@ -215,12 +215,13 @@ def main():
 
     def timestep_loop():
         from hedge.timestep import times_and_steps
+        max_dt = op.estimate_timestep(discr,
+                stepper=stepper, t=0, fields=boxed_fields[0])
         step_it = times_and_steps(
                 final_time=options.final_time, 
                 max_steps=options.steps,
                 logmgr=logmgr,
-                max_dt_getter=lambda t: op.estimate_timestep(discr,
-                    stepper=stepper, t=t, fields=boxed_fields[0]))
+                max_dt_getter=lambda t: max_dt)
 
         for step, t, dt in step_it:
             if options.vis_interval and step % options.vis_interval == 0:
