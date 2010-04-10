@@ -40,6 +40,7 @@ def main():
         method = Range(0, len(all_methods)-1)
         mat_type = Range(0, len(all_mat_types)-1)
         substep_count = Range(0, len(all_substep_counts)-1)
+        stable_steps = Range(0, len(all_stable_steps)-1)
 
         def __init__(self):
             HasTraits.__init__(self)
@@ -49,26 +50,29 @@ def main():
                     substep_count=all_substep_counts[0],
                     method=all_methods[0],
                     angle=all_angles[0],
+                    stable_steps=all_stable_steps[0],
                     )
 
             self.plot = self.scene.mlab.mesh(x, y, z)
             self.first = True
             self.axes = None
 
-        def get_data(self, mat_type, substep_count, method, angle):
+        def get_data(self, mat_type, substep_count, method, angle, stable_steps):
             qry = db_conn.execute(
                     "select ratio, offset, dt from data"
                     " where method=? and angle=?"
                     " and mat_type=? and substep_count=?"
+                    " and stable_steps=?"
                     " and offset <= ?+1e-10"
                     " order by ratio, offset",
-                    (method, angle, mat_type, substep_count, numpy.pi))
+                    (method, angle, mat_type, substep_count, stable_steps, numpy.pi))
             x, y, z = auto_xy_reshape(qry)
 
             import mrab_stability
             factory = getattr(mrab_stability, mat_type)
             print "------------------------------"
-            print mat_type, method, substep_count, angle/numpy.pi
+            print mat_type, method, substep_count, angle/numpy.pi, \
+                    "stabsteps:%d" % stable_steps
             if x:
                 ratio = x[0]
                 print "matrices for ratio=%g" % ratio
@@ -90,20 +94,21 @@ def main():
 
             return xnew, ynew, z
 
-        @on_trait_change('angle,method,mat_type,substep_count')
+        @on_trait_change('angle,method,mat_type,substep_count,stable_steps')
         def update_plot(self):
 
             mat_type = all_mat_types[int(self.mat_type)]
             substep_count = all_substep_counts[int(self.substep_count)]
             method = all_methods[int(self.method)]
             angle = all_angles[int(self.angle)]
+            stable_steps = all_stable_steps[int(self.stable_steps)]
 
             x, y, z = self.get_data(
                     mat_type=mat_type,
                     substep_count=substep_count,
                     method=method,
                     angle=angle,
-                    )
+                    stable_steps=stable_steps)
 
             self.plot.mlab_source.set(x=x, y=y, scalars=z, z=z)
 
@@ -119,7 +124,7 @@ def main():
                 Item('scene', 
                     editor=SceneEditor(scene_class=MayaviScene),
                     show_label=False),
-                VGroup('_', 'angle', 'method', 'mat_type', 'substep_count'),
+                VGroup('_', 'angle', 'method', 'mat_type', 'substep_count', 'stable_steps'),
                 width=1024, height=768, resizable=True)
 
     visualization = Visualization()
