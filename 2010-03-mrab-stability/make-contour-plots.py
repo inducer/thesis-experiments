@@ -35,8 +35,10 @@ def get_data(db_conn, mat_type, angle, method, substep_count):
             "select ratio, offset, dt from data"
             " where method=? and angle=?"
             " and mat_type=? and substep_count=?"
+            " and offset <= ?+1e-10"
             " order by ratio, offset",
-            (method, angle, mat_type+"MatrixFactory", substep_count))
+            (method, angle, mat_type+"MatrixFactory", substep_count,
+                numpy.pi))
     ratio, offset, dt = auto_xy_reshape(qry)
 
     ratio = numpy.array(ratio)
@@ -75,20 +77,18 @@ def make_stabplot(db_conn, mat_type, angle, method, substep_count):
     plot(ratio*cos(offset[0]), ratio*sin(offset[0]), 'k')
 
     text(0, 1.051*ratio[-1], r"$\pi/2$")
-    text(0, -1.051*ratio[-1], r"-$\pi/2$",
-            va="top")
-    text(-1.05*ratio[-1], 0, r" $\pi$",
-            ha="right", va="center")
+    #text(0, -1.051*ratio[-1], r"-$\pi/2$", va="top")
+    text(-1.05*ratio[-1], 0, r" $\pi$", ha="right", va="center")
 
     text(ratio[-1]*1.1*cos(3*pi/4), ratio[-1]*1.1*sin(3*pi/4),
             r"$\beta$",
             va="center", ha="center")
     #text(ratio[len(ratio)//2], 0, r"$\mu$",
             #va="center", ha="center")
-    text(0, 0, "%.1f" % ratio[0],
-            va="center", ha="center")
-    text(ratio[-1], 0, "%.1f $\mu$" % ratio[-1],
-            va="center", ha="left")
+    text(ratio[0], -0.1, "%.1f" % ratio[0], va="baseline", ha="center")
+    text(ratio[-1], -0.1, "%.1f" % ratio[-1], va="baseline", ha="center")
+    text((ratio[-1]+ratio[0])/2, -0.1, "$\mu$" % ratio[-1],
+            va="baseline", ha="left")
 
     pcolormesh(x, y, dt)
     cb = colorbar()
@@ -101,7 +101,7 @@ def make_stabplot(db_conn, mat_type, angle, method, substep_count):
     elif mat_type == "Oscillation": mat_eigval = "i,i"
     else: raise ValueError("matrix type not understood")
 
-    text(0, 1.2, r"%s MRAB on $(\lambda_1, \lambda_2)=(%s)$ $k=%d$ $\alpha=%.3f \pi$"
+    text(0, 1.5, r"%s MRAB on $(\lambda_1, \lambda_2)=(%s)$ $k=%d$ $\alpha=%.3f \pi$"
             % (method, mat_eigval, substep_count, angle/pi), ha="center")
 
     cs = contour(x, y, dt, 20, colors="k")
