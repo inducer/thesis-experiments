@@ -237,45 +237,47 @@ def main():
             boxed_fields[0] = stepper(boxed_fields[0], t, dt, rhs)
             boxed_t[0] = t
 
-    if options.profile:
-        from cProfile import Profile
-        prof = Profile()
+    try:
+        if options.profile:
+            from cProfile import Profile
+            prof = Profile()
 
-        rhs(0, boxed_fields[0]) # keep init traffic out of profile
+            rhs(0, boxed_fields[0]) # keep init traffic out of profile
 
-        try:
-            prof.runcall(timestep_loop)
+            try:
+                prof.runcall(timestep_loop)
+                fields = boxed_fields[0]
+            finally:
+                from lsprofcalltree import KCacheGrind
+                kg = KCacheGrind(prof)
+                import sys
+                from hedge.tools import get_rank
+                kg.output(open(
+                    "profile-%s-rank-%d.log" % (sys.argv[0], get_rank(discr)),
+                    "w"))
+        else:
+            timestep_loop()
             fields = boxed_fields[0]
-        finally:
-            from lsprofcalltree import KCacheGrind
-            kg = KCacheGrind(prof)
-            import sys
-            from hedge.tools import get_rank
-            kg.output(open(
-                "profile-%s-rank-%d.log" % (sys.argv[0], get_rank(discr)),
-                "w"))
-    else:
-        timestep_loop()
-        fields = boxed_fields[0]
 
-    numpy.seterr('raise')
-    mode.set_time(boxed_t[0])
+        numpy.seterr('raise')
+        mode.set_time(boxed_t[0])
 
-    from hedge.tools import relative_error
-    true_fields = discr.convert_volume(to_obj_array(mode(discr)
-        .real.astype(discr.default_scalar_type)), kind=discr.compute_kind)
+        from hedge.tools import relative_error
+        true_fields = discr.convert_volume(to_obj_array(mode(discr)
+            .real.astype(discr.default_scalar_type)), kind=discr.compute_kind)
 
-    l2_diff = discr.norm(fields-true_fields) 
-    l2_true = discr.norm(true_fields)
-    relerr = relative_error(l2_diff, l2_true)
+        l2_diff = discr.norm(fields-true_fields) 
+        l2_true = discr.norm(true_fields)
+        relerr = relative_error(l2_diff, l2_true)
 
-    logmgr.set_constant("relerr", relerr)
-    logmgr.close()
-
-    if rcon.is_head_rank:
-        print "rel L2 error: %g" % relerr
-
-    discr.close()
+        logmgr.set_constant("relerr", relerr)
+        if rcon.is_head_rank:
+            print "rel L2 error: %g" % relerr
+    finally:
+        logmgr.close()
+        if options.vis_interval:
+            vis.close()
+        discr.close()
 
 if __name__ == "__main__":
     main()
