@@ -153,7 +153,7 @@ def euler_sod_convergence_in_k():
                         "order = %d" % order,
                         "n_elements = %d" % n_elements,
                         "viscosity_scale = %r" % viscosity_scale,
-                        "vis_interval = 0.01",
+                        "vis_interval = 0.002",
                         "case = SodProblem()",
                         "smoother = %s" % smoother,
                         #"vis_exact = False",
@@ -189,12 +189,51 @@ def advection_convergence_in_k():
                         "order = %d" % order,
                         "n_elements = %d" % n_elements,
                         "viscosity_scale = %r" % viscosity_scale,
-                        "vis_interval = 0.5",
+                        "vis_interval = 0.2",
                         "case = FunnySineTestCase()",
                         "smoother = %s" % smoother,
                         #"vis_exact = False",
                         ])
                     job.submit()
+
+def wave_convergence_in_k():
+    O = ConstructorPlaceholder
+    timestamp = get_timestamp()
+
+    for case, vis_interval in [
+            (O("TwoJumpTestCase"), 0.2),
+            (O("LaxerSineTestCase"), 0.005),
+            (O("PureSineTestCase"), 0.005),
+            ]:
+        for order in [5]:
+            for n_elements in [20, 40, 80, 160, 320, 640]:
+                for viscosity_scale in [0, 1]:
+                    for smoother in [
+                            O("VertexwiseMaxSmoother"),
+                            ]:
+                        job = BatchJob(
+                                "wave-kconv-$DATE/N%d-K%d-v%f-%s-%s" % (
+                                    order,
+                                    n_elements,
+                                    viscosity_scale,
+                                    cn_with_args(smoother),
+                                    cn_with_args(case),
+                                    ),
+                                "wave.py",
+                                timestamp=timestamp,
+                                aux_files=["smoother.py", "avcommon.py"])
+
+                        job.write_setup([
+                            "order = %d" % order,
+                            "n_elements = %d" % n_elements,
+                            "viscosity_scale = %f" % viscosity_scale,
+                            "vis_interval = %f" % vis_interval,
+                            "case = %s" % case,
+                            "smoother = %s" % smoother,
+                            #"vis_exact = False",
+                            ])
+                        job.submit()
+
 
 import sys
 exec sys.argv[1]
