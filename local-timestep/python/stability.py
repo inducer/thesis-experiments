@@ -65,6 +65,7 @@ def plot_stability_region(stepper_maker, **kwargs):
     angles = numpy.arange(0, 2*pi, 2*pi/200)
     from multiprocessing import Pool
     points = Pool().map(StabPointFinder(stepper_maker), angles)
+    #points = map(StabPointFinder(stepper_maker), angles)
 
     points = numpy.array(points)
 
@@ -109,21 +110,27 @@ if __name__ == "__main__":
     sm = DumkaMaker(1)
     from matplotlib.pyplot import *
 
-    rc("font", size=8)
-    title("Stability Region")
-    xlabel("Re $k$")
-    ylabel("Im $k$")
+    rc("font", size=20)
+    #title("Stability Region")
+    xlabel(r"Re $\lambda$")
+    ylabel(r"Im $\lambda$")
     grid()
 
-    #for pol_i in range(2, -1, -1):
-        #plot_stability_region(DumkaMaker(pol_i), 
-                #label="Dumka3(%d)" % pol_i, alpha=0.3)
-    plot_stability_region(LSRK4Maker(), label="C/K RK4", alpha=0.3)
-    plot_stability_region(ODE23Maker(), label="ODE23", alpha=0.3)
-    plot_stability_region(ODE45Maker(), label="ODE45", alpha=0.3)
+    for pol_i in range(3, 0, -1):
+        plot_stability_region(DumkaMaker(pol_i), 
+                label="Dumka3(%d)" % pol_i)
+    plot_stability_region(LSRK4Maker(), label="C/K RK4")
+    #plot_stability_region(ODE23Maker(), label="ODE23", alpha=0.3)
+    #plot_stability_region(ODE45Maker(), label="ODE45", alpha=0.3)
 
-    legend(labelspacing=0.1, borderpad=0.3)
-    #savefig("stab-regions.png", dpi=150)
-    show()
+    legend(labelspacing=0.1, borderpad=0.3, loc="best")
+    savefig("stab-regions.pdf")
+    xmin, xmax = xlim()
+    xsize = xmax-xmin
+
+    gca().set_aspect("equal")
+    ylim([-xsize/2*0.75, xsize/2*0.75])
+    savefig("stab-regions-eq-aspect.pdf")
+    #show()
 
 
