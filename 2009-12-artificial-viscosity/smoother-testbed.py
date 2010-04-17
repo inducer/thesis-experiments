@@ -89,8 +89,8 @@ def main():
     from hedge.discretization import Projector
     vis_proj = Projector(discr, vis_discr)
 
-    from hedge.visualization import SiloVisualizer
-    vis = SiloVisualizer(vis_discr, rcon)
+    from hedge.visualization import VtkVisualizer
+    vis = VtkVisualizer(vis_discr, rcon)
     visf = vis.make_file("bumpy")
     vis.add_data(visf, [ 
         ("bumpy", vis_proj(bumpy)),
@@ -155,8 +155,8 @@ def pstudy_triblob():
             outf.write("\n")
             outf.flush()
 
-    from hedge.visualization import SiloVisualizer
-    vis = SiloVisualizer(vis_discr, rcon)
+    from hedge.visualization import VtkVisualizer
+    vis = VtkVisualizer(vis_discr, rcon)
     visf = vis.make_file("bumpy")
     vis.add_data(visf, vis_data)
     visf.close()
