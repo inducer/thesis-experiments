@@ -1,17 +1,5 @@
 from __future__ import division, with_statement
 
-if False:
-    basedir = "sod-kconv-2010-04-05-102028"
-    refsoln = "N4-K640-v0.400000-VertexwiseMaxSmoother/"
-    glob_set = "N4-K*-v0.400000-VertexwiseMaxSmoother"
-    conv_var = "rho"
-    suffix = ""
-elif True:
-    basedir = "adv-kconv-2010-04-05-154652"
-    refsoln = "N4-K640-v0.200000-VertexwiseMaxSmoother"
-    glob_set = "N4-K*-v0.200000-VertexwiseMaxSmoother"
-    conv_var = "u"
-    suffix = "_dg"
 
 plot_loc_errors = False
 plot_eoc = False
@@ -24,11 +12,12 @@ from glob import glob
 from os.path import join, basename
 import re
 import numpy
+import numpy.linalg as la
 from pytools import memoize_method
 from matplotlib.pyplot import (
     clf, semilogy, legend, legend, title, savefig,
     plot, show, grid, rc, xlabel, ylabel, pcolor,
-    colorbar)
+    colorbar, imshow)
 
 
 
@@ -41,8 +30,46 @@ def find_step_no(filename):
 
 
 
+def get_point_evaluator(from_discr, to_discr, to_node_idx):
+    # makes 1D uniform assumptions
+    from_eg, = from_discr.element_groups
+    to_eg, = to_discr.element_groups
+
+    from_ldis = from_eg.local_discretization
+    to_ldis = to_eg.local_discretization
+
+    to_el_idx = to_node_idx//to_ldis.node_count()
+    to_el = to_eg.members[to_el_idx]
+    to_el_rng = to_eg.ranges[to_el_idx]
+    assert to_el_rng.start <= to_node_idx < to_el_rng.stop
+
+    pt = to_discr.nodes[to_node_idx]
+
+    el_ratio = len(to_discr.mesh.elements) / len(from_discr.mesh.elements)
+    assert el_ratio == int(el_ratio)
+    el_ratio = int(el_ratio)
+
+    from_el_idx = to_el_idx // el_ratio
+    from_el = from_eg.members[from_el_idx]
+    assert from_el.contains_point(pt, 1e-10)
+    from_el_rng = from_eg.ranges[from_el_idx]
+
+    from hedge.discretization import _PointEvaluator
+
+    basis_values = numpy.array([
+            phi(from_el.inverse_map(pt))
+            for phi in from_ldis.basis_functions()])
+    vdm_t = from_ldis.vandermonde().T
+    return _PointEvaluator(
+            discr=from_discr,
+            el_range=from_el_rng,
+            interp_coeff=la.solve(vdm_t, basis_values))
+
+
+
+
 class RunInfo:
-    def __init__(self, path):
+    def __init__(self, path, conv_var, suffix):
         self.path = path
 
         self.vis_steps = sorted(
@@ -61,7 +88,7 @@ class RunInfo:
         self.steps = numpy.array(steps, dtype=numpy.float64)
         self.times = numpy.array(times, dtype=numpy.float64)
 
-        self.discr, self.a, self.b = self.get_discr()
+        self.discr, self.a, self.b = self.get_discr(conv_var, suffix)
 
         self.h = (self.b-self.a)/self.element_count
 
@@ -71,7 +98,7 @@ class RunInfo:
     def find_time(self, t):
         return numpy.interp(t, self.steps, self.times)
 
-    def get_discr(self):
+    def get_discr(self, conv_var, suffix):
         with SiloFile(self.vis_steps[0][1], create=False, mode=DB_READ) as db:
             crv = db.get_curve(conv_var+suffix)
             self.a = a = crv.x[0]
@@ -86,9 +113,8 @@ class RunInfo:
             return discr, a, b
 
     @memoize_method
-    def get_interpolator(self, x):
-        return self.discr.get_point_evaluator(numpy.array([x]),
-                thresh=1e-13)
+    def get_point_evaluator(self, to_discr, to_node_idx):
+        return get_point_evaluator(self.discr, to_discr, to_node_idx)
 
 
 def data_from_silo(fname, var_names, discr=None):
@@ -105,8 +131,8 @@ def data_from_silo(fname, var_names, discr=None):
 
 def interpolate_to_ref_grid(ref_ri, ri, var):
     result = ref_ri.discr.volume_zeros()
-    for i, ref_node in enumerate(ref_ri.discr.nodes):
-        intp = ri.get_interpolator(ref_node[0])
+    for i in xrange(len(ref_ri.discr.nodes)):
+        intp = ri.get_point_evaluator(ref_ri.discr, i)
         result[i] = intp(var)
 
     return result
@@ -117,14 +143,26 @@ def interpolate_to_ref_grid(ref_ri, ri, var):
 
 
 
-def main():
-    rc("font", size=20)
+def make_spatial_eoc_plot(
+        basedir,
+        refsoln,
+        conv_var,
+        suffix="",
+        outfile=None,
+        what="",
+        glob_pattern="*",
+        plot_loc_errors = False,
+        plot_eoc = False,
+        plot_xt_eoc = False,
+        plot_xt_eoc_mpl = False,
+        plot_xt_eoc_mpl_pcolor = True):
+    clf()
 
-    ref_ri = RunInfo(join(basedir, refsoln))
+    ref_ri = RunInfo(join(basedir, refsoln), conv_var, suffix)
 
     run_infos = []
-    for dirname in glob(join(basedir, "*")):
-        ri = RunInfo(dirname)
+    for dirname in glob(join(basedir, glob_pattern)):
+        ri = RunInfo(dirname, conv_var, suffix)
         if ri.element_count <= ref_ri.element_count:
             run_infos.append((ri.element_count, ri))
     run_infos.sort()
@@ -134,11 +172,13 @@ def main():
     eoc_data = []
     vis_times = []
     #for vis_idx, (ref_step, ref_silo) in list(enumerate(ref_ri.vis_steps)):
-    for vis_idx, (ref_step, ref_silo) in list(enumerate(ref_ri.vis_steps))[1:]:
+    #for vis_idx, (ref_step, ref_silo) in list(enumerate(ref_ri.vis_steps))[1:]:
+    for vis_idx, (ref_step, ref_silo) in list(enumerate(ref_ri.vis_steps))[:-1]:
         t = ref_ri.find_time(ref_step)
         print t
 
         ref_var, = data_from_silo(ref_silo, [conv_var+"_exact"])
+        #ref_var, = data_from_silo(ref_silo, [conv_var+suffix])
 
         error_lists = numpy.zeros((len(ref_ri.discr), len(run_infos)))
         for ri_idx, (el_count, run_info) in enumerate(run_infos):
@@ -211,19 +251,64 @@ def main():
         t = numpy.array(vis_times)
         eoc_data = numpy.array(eoc_data)
 
-        x = x[:, numpy.newaxis] * numpy.ones((len(x), len(t)))
-        t = t[numpy.newaxis, :] * numpy.ones((len(x), len(t)))
-        pcolor(x, t, eoc_data.T)
+        #x = x[:, numpy.newaxis] * numpy.ones((len(x), len(t)))
+        #t = t[numpy.newaxis, :] * numpy.ones((len(x), len(t)))
+        #pcolor(x, t, eoc_data.T)
+        imshow(eoc_data[::-1,:], extent=(x[0], x[-1], t[0], t[-1]),
+                aspect="auto")
         xlabel("$x$")
         ylabel("$t$")
-        title("Experimental Order of Convergence")
+        title("Spatial EOC: %s" % what)
 
         colorbar()
 
-        show()
+        if outfile:
+            savefig("%s-xt-eoc.pdf" % outfile)
+        else:
+            show()
 
 
 
 
 if __name__ == "__main__":
-    main()
+    rc("font", size=20)
+    if False:
+        make_spatial_eoc_plot(
+                basedir = "sod-kconv-2010-04-12-185516",
+                refsoln = "N4-K640-v0.400000-VertexwiseMaxSmoother/",
+                conv_var = "rho",
+                outfile="spatial-eoc-pics/euler-sod",
+                what="Euler Sod $N=4$")
+        make_spatial_eoc_plot(
+                basedir = "adv-kconv-2010-04-12-185521",
+                refsoln = "N4-K640-v0.200000-VertexwiseMaxSmoother",
+                conv_var = "u",
+                suffix = "_dg",
+                outfile="spatial-eoc-pics/advection",
+                what="Advection Sines $N=4$")
+    if False:
+        make_spatial_eoc_plot(
+                basedir = "wave-kconv-2010-04-17-145456",
+                glob_pattern="*-v0*TwoJumpTestCase",
+                refsoln = "N5-K640-v1.000000-VertexwiseMaxSmoother-TwoJumpTestCase",
+                conv_var = "u",
+                outfile="spatial-eoc-pics/wave-no-visc",
+                what=r"Wave Heavisides $N=5$ $\nu=0$")
+        make_spatial_eoc_plot(
+                basedir = "wave-kconv-2010-04-17-145456",
+                glob_pattern="*-v1*TwoJumpTestCase",
+                refsoln = "N5-K640-v1.000000-VertexwiseMaxSmoother-TwoJumpTestCase",
+                conv_var = "u",
+                outfile="spatial-eoc-pics/wave",
+                what="Wave Heavisides $N=5$")
+
+    make_spatial_eoc_plot(
+            basedir = "wave-kconv-2010-04-14-120341",
+            glob_pattern="*-v0*-PureSineTestCase",
+            refsoln = "N5-K640-v0.000000-VertexwiseMaxSmoother-PureSineTestCase",
+            conv_var = "u",
+            outfile="spatial-eoc-pics/wave-sin",
+            what="Wave Sine $N=5$",
+            plot_loc_errors = True,
+            #plot_xt_eoc_mpl_pcolor = False,
+            )

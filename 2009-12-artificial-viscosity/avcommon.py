@@ -30,6 +30,7 @@ def make_ui(cases):
 
         "vis_exact": True,
         "extra_vis": False,
+        "log_l1_error": True,
         }
 
     constants = {
