@@ -247,6 +247,57 @@ class SquareInChannelProblem(object):
 
 
 
+class VortexProblem(object):
+    def __init__(self, el_volume=1):
+        from pytools import add_python_path_relative_to_script
+        add_python_path_relative_to_script("../../hedge/examples/gas_dynamics")
+
+        from gas_dynamics_initials import Vortex
+        self.flow = Vortex()
+
+    @property
+    def gamma(self):
+        return self.flow.gamma
+
+    def get_initial_data(self):
+        return self.flow
+
+    @property
+    def final_time(self):
+        return self.flow.final_time
+
+    def make_mesh(self):
+        from hedge.mesh.generator import \
+                make_rect_mesh, \
+                make_centered_regular_rect_mesh
+        return make_rect_mesh((0,-5), (10,5), max_area=0.1)
+
+    def get_operator(self, setup):
+        from hedge.models.gas_dynamics import GasDynamicsOperator
+        from hedge.second_order import IPDGSecondDerivative
+        from hedge.mesh import TAG_ALL, TAG_NONE
+
+        return GasDynamicsOperator(dimensions=2,
+                gamma=self.flow.gamma,
+                mu=self.flow.mu,
+
+                bc_inflow=self.flow,
+                bc_outflow=self.flow,
+                bc_noslip=self.flow,
+
+                second_order_scheme=IPDGSecondDerivative(
+                    stab_coefficient=setup.stab_coefficient),
+                #second_order_scheme=CentralSecondDerivative(),
+
+                supersonic_inflow_tag=TAG_NONE,
+                supersonic_outflow_tag=TAG_NONE,
+                inflow_tag=TAG_ALL,
+                outflow_tag=TAG_NONE,
+                noslip_tag=TAG_NONE)
+
+
+
+
 def make_stepper():
     from hedge.timestep.runge_kutta import (
             LSRK4TimeStepper,
@@ -256,7 +307,7 @@ def make_stepper():
     #return RK4TimeStepper()
     #return Dumka3TimeStepper(2, rtol=1e-6)
     #return Dumka3TimeStepper(4)
-    return ODE23TimeStepper(rtol=1e-6)
+    return ODE23TimeStepper(rtol=1e-7)
     #return ODE45TimeStepper(rtol=1e-6)
 
 
@@ -301,6 +352,7 @@ def main(flux_type_arg="upwind"):
         ShuOsherProblem,
         AirplaneProblem,
         SquareInChannelProblem,
+        VortexProblem,
         ])
     setup = ui.gather()
 
@@ -349,7 +401,7 @@ def main(flux_type_arg="upwind"):
     if hasattr(setup.case, "get_operator"):
         op = setup.case.get_operator(setup)
     else:
-        op = GasDynamicsOperator(discr.dimensions,
+        op = GasDynamicsOperator(1,
                 gamma=setup.case.gamma,
                 mu=0,
 
