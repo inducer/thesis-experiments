@@ -17,7 +17,7 @@ from pytools import memoize_method
 from matplotlib.pyplot import (
     clf, semilogy, legend, legend, title, savefig,
     plot, show, grid, rc, xlabel, ylabel, pcolor,
-    colorbar, imshow)
+    colorbar, imshow, gcf)
 
 
 
@@ -151,11 +151,10 @@ def make_spatial_eoc_plot(
         outfile=None,
         what="",
         glob_pattern="*",
-        plot_loc_errors = False,
-        plot_eoc = False,
-        plot_xt_eoc = False,
-        plot_xt_eoc_mpl = False,
-        plot_xt_eoc_mpl_pcolor = True):
+        plot_loc_errors=False,
+        plot_loc_errors_pdf=False,
+        plot_xt_visc=False,
+        plot_xt_eoc_mpl_pcolor=True):
     clf()
 
     ref_ri = RunInfo(join(basedir, refsoln), conv_var, suffix)
@@ -170,25 +169,38 @@ def make_spatial_eoc_plot(
     h_values = numpy.array([ri.h for k, ri in run_infos])
 
     eoc_data = []
+    sensor_data = []
     vis_times = []
-    #for vis_idx, (ref_step, ref_silo) in list(enumerate(ref_ri.vis_steps)):
-    #for vis_idx, (ref_step, ref_silo) in list(enumerate(ref_ri.vis_steps))[1:]:
-    for vis_idx, (ref_step, ref_silo) in list(enumerate(ref_ri.vis_steps))[:-1]:
+    for vis_idx, (ref_step, ref_silo) in list(enumerate(ref_ri.vis_steps)):
+    #for vis_idx, (ref_step, ref_silo) in list(enumerate(ref_ri.vis_steps))[:3]:
+    #for vis_idx, (ref_step, ref_silo) in list(enumerate(ref_ri.vis_steps))[:-1]:
         t = ref_ri.find_time(ref_step)
         print t
 
         ref_var, = data_from_silo(ref_silo, [conv_var+"_exact"])
         #ref_var, = data_from_silo(ref_silo, [conv_var+suffix])
 
+        agg_sensor = ref_ri.discr.volume_zeros()
+
         error_lists = numpy.zeros((len(ref_ri.discr), len(run_infos)))
         for ri_idx, (el_count, run_info) in enumerate(run_infos):
             print "el_cnt", el_count
             native_var, = data_from_silo(
                     run_info.vis_steps[vis_idx][1], 
-                    [conv_var+suffix], 
+                    [conv_var+suffix,], 
                     run_info.discr)
             var = interpolate_to_ref_grid(ref_ri, run_info, native_var)
             error_lists[:,ri_idx] = numpy.abs(var-ref_var)
+
+            if plot_xt_visc:
+                sensor, = data_from_silo(
+                        run_info.vis_steps[vis_idx][1], 
+                        ["sensor"], 
+                        run_info.discr)
+                ref_sensor = interpolate_to_ref_grid(ref_ri, run_info, sensor)
+                agg_sensor += ref_sensor
+
+        agg_sensor /= len(run_infos)
 
         eoc_values = ref_ri.discr.volume_zeros()
         for i, error_list in enumerate(error_lists):
@@ -201,8 +213,9 @@ def make_spatial_eoc_plot(
 
         vis_times.append(t)
         eoc_data.append(eoc_values)
+        sensor_data.append(agg_sensor)
 
-        if plot_loc_errors:
+        if plot_loc_errors or plot_loc_errors_pdf:
             clf()
             for (el_count, ri), err in zip(run_infos, error_lists.T):
                 semilogy(ref_ri.discr.nodes[:,0], err, 
@@ -210,40 +223,13 @@ def make_spatial_eoc_plot(
             #plot(ref_ri.discr.nodes[:,0], eoc_values)
             if vis_idx <= 3:
                 legend()
-            title("Error plots at $t=%f$" % t)
-            savefig("loc-errors-%03d.png" % vis_idx)
-
-        if plot_eoc:
-            title("Local EOC at $t=%f$" % t)
-
-            plot(ref_ri.discr.nodes[:,0], eoc_values)
-            savefig("eoc-%03d.png" % vis_idx)
-            show()
-
-    if plot_xt_eoc:
-        with SiloFile("spatial-eoc.silo", mode=DB_CLOBBER) as f:
-            f.put_quadmesh("xtmesh", [
-                ref_ri.discr.nodes[:,0].copy(),
-                numpy.array(vis_times, dtype=numpy.float64)*10
-                ])
-
-            ary_data = numpy.asarray(eoc_data)
-            f.put_quadvar1(conv_var+"_eoc", "xtmesh",
-                    ary_data, ary_data.shape,
-                    centering=DB_NODECENT)
-
-    if plot_xt_eoc_mpl:
-        clf()
-        s = len(vis_times)
-        for i in [0, int(s/2), s-1]:
-            plot(ref_ri.discr.nodes[:,0], eoc_data[i],
-                    label="$t=%.2f$" % vis_times[i])
-        xlabel("$x$")
-        ylabel("Experimental Order of Convergence")
-        legend()
-        grid()
-
-        show()
+            title("Pointwise Error at $t=%.4f$" % t)
+            xlabel("$x$")
+            ylabel("Pointwise Error")
+            if plot_loc_errors:
+                savefig("%s-loc-errors-%03d.png" % (outfile, vis_idx))
+            if plot_loc_errors_pdf:
+                savefig("%s-loc-errors-%03d.pdf" % (outfile, vis_idx))
 
     if plot_xt_eoc_mpl_pcolor:
         clf()
@@ -251,34 +237,62 @@ def make_spatial_eoc_plot(
         t = numpy.array(vis_times)
         eoc_data = numpy.array(eoc_data)
 
-        #x = x[:, numpy.newaxis] * numpy.ones((len(x), len(t)))
-        #t = t[numpy.newaxis, :] * numpy.ones((len(x), len(t)))
-        #pcolor(x, t, eoc_data.T)
         imshow(eoc_data[::-1,:], extent=(x[0], x[-1], t[0], t[-1]),
                 aspect="auto")
         xlabel("$x$")
         ylabel("$t$")
-        title("Spatial EOC: %s" % what)
+        t = title("$x$-$t$ EOC: %s" % what)
+        t.set_position([0.55, 1.05])
 
-        colorbar()
+        gcf().subplots_adjust(left=0.15)
+        gcf().subplots_adjust(top=0.85)
+        cb = colorbar()
+        cb.set_label("EOC")
 
         if outfile:
             savefig("%s-xt-eoc.pdf" % outfile)
         else:
             show()
 
+    if plot_xt_visc:
+        clf()
+        x = ref_ri.discr.nodes[:,0]
+        t = numpy.array(vis_times)
+        sensor_data = numpy.array(sensor_data)
+
+        imshow(sensor_data[::-1,:], extent=(x[0], x[-1], t[0], t[-1]),
+                aspect="auto")
+        xlabel("$x$")
+        ylabel("$t$")
+        t = title("$x$-$t$ Viscosity: %s" % what)
+        t.set_position([0.55, 1.05])
+
+        gcf().subplots_adjust(left=0.15)
+        gcf().subplots_adjust(top=0.85)
+        cb = colorbar()
+        cb.set_label(r"$\nu$")
+
+        if outfile:
+            savefig("%s-xt-visc.pdf" % outfile)
+        else:
+            show()
 
 
 
 if __name__ == "__main__":
     rc("font", size=20)
-    if False:
+
+    if True:
         make_spatial_eoc_plot(
-                basedir = "sod-kconv-2010-04-12-185516",
-                refsoln = "N4-K640-v0.400000-VertexwiseMaxSmoother/",
+                basedir="sod-kconv-2010-04-18-144307",
+                refsoln = "N5-K320-v0.400000-VertexwiseMaxSmoother/",
                 conv_var = "rho",
                 outfile="spatial-eoc-pics/euler-sod",
-                what="Euler Sod $N=4$")
+                what="Euler Sod $N=5$",
+                plot_xt_visc=True,
+                )
+
+    if False:
         make_spatial_eoc_plot(
                 basedir = "adv-kconv-2010-04-12-185521",
                 refsoln = "N4-K640-v0.200000-VertexwiseMaxSmoother",
@@ -286,29 +300,25 @@ if __name__ == "__main__":
                 suffix = "_dg",
                 outfile="spatial-eoc-pics/advection",
                 what="Advection Sines $N=4$")
-    if False:
+    if True:
+        case = "LaxerSineTestCase"
+        #case = "TwoJumpTestCase"
         make_spatial_eoc_plot(
-                basedir = "wave-kconv-2010-04-17-145456",
-                glob_pattern="*-v0*TwoJumpTestCase",
-                refsoln = "N5-K640-v1.000000-VertexwiseMaxSmoother-TwoJumpTestCase",
+                basedir = "wave-kconv-2010-04-17-171647",
+                glob_pattern="*-v0*%s" % case,
+                refsoln = "N5-K320-v1.000000-VertexwiseMaxSmoother-%s" % case,
                 conv_var = "u",
                 outfile="spatial-eoc-pics/wave-no-visc",
-                what=r"Wave Heavisides $N=5$ $\nu=0$")
+                what=r"Wave Sine+Jump $N=5$ $\nu=0$")
         make_spatial_eoc_plot(
-                basedir = "wave-kconv-2010-04-17-145456",
-                glob_pattern="*-v1*TwoJumpTestCase",
-                refsoln = "N5-K640-v1.000000-VertexwiseMaxSmoother-TwoJumpTestCase",
+                basedir = "wave-kconv-2010-04-17-171647",
+                glob_pattern="*-v1*%s" % case,
+                refsoln = "N5-K320-v1.000000-VertexwiseMaxSmoother-%s" % case,
                 conv_var = "u",
                 outfile="spatial-eoc-pics/wave",
-                what="Wave Heavisides $N=5$")
+                what="Wave Sine+Jump $N=5$",
+                plot_loc_errors = True,
+                plot_loc_errors_pdf = True,
+                plot_xt_visc=True,
+                )
 
-    make_spatial_eoc_plot(
-            basedir = "wave-kconv-2010-04-14-120341",
-            glob_pattern="*-v0*-PureSineTestCase",
-            refsoln = "N5-K640-v0.000000-VertexwiseMaxSmoother-PureSineTestCase",
-            conv_var = "u",
-            outfile="spatial-eoc-pics/wave-sin",
-            what="Wave Sine $N=5$",
-            plot_loc_errors = True,
-            #plot_xt_eoc_mpl_pcolor = False,
-            )
