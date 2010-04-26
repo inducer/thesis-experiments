@@ -37,7 +37,6 @@ def make_shock_wrinkles_pic():
 
 def make_shu_osher_pic():
     clf()
-    from glob import glob
     db = SiloFile(
             sorted(glob("kept-data/shu-osher-n5-k80/euler*silo"))[-1],
             create=False, mode=DB_READ)
@@ -52,6 +51,7 @@ def make_shu_osher_pic():
     legend(loc="best")
     grid()
     gcf().subplots_adjust(top=0.85)
+    gcf().subplots_adjust(left=0.15)
     savefig("pics/shu-osher-n5-k80.pdf")
 
 
@@ -60,7 +60,6 @@ def make_shu_osher_pic():
 
 def make_lax_pic():
     clf()
-    from glob import glob
     db = SiloFile(
             glob("kept-data/lax-n5-k80/euler*silo")[-1],
             create=False, mode=DB_READ)
@@ -76,19 +75,51 @@ def make_lax_pic():
     ylabel(r"$\rho$, $p$")
     legend(loc="best")
     grid()
+    gcf().subplots_adjust(left=0.15)
     savefig("pics/lax-n5-k80.pdf")
 
 
 
 
-def make_skyline_pics():
-    from hedge.discretization.local import IntervalDiscretization
-    el = IntervalDiscretization(10)
-    nodes = numpy.array(el.unit_nodes()).reshape(-1)
-    fine_x_nodes = numpy.linspace(nodes[0], nodes[-1], 100)
+def make_sod_pic():
+    clf()
+    from glob import glob
+    db = SiloFile(
+            "kept-data/euler-2010-03-04-141612/N5-K81-v0.400000-VertexwiseMaxSmoother/euler-000570.silo",
+            create=False, mode=DB_READ)
 
-    def make_plots(func, what, draw_baseline=False):
-        values = numpy.array([func(node) for node in nodes])
+    rho = db.get_curve("rho")
+    p = db.get_curve("p")
+    rho_ex = db.get_curve("rho_exact")
+    p_ex = db.get_curve("p_exact")
+
+    plot(rho.x, rho.y, label=r"$\rho$")
+    plot(p.x, p.y, label=r"$p$")
+    plot(rho_ex.x, rho_ex.y, label=r"$\rho$ (exact, $L^2$ proj.)")
+    plot(p_ex.x, p_ex.y, label=r"$p$ (exact, $L^2$ proj.)")
+
+    t = title("Sod's Problem with $N=5$ and $K=80$")
+    t.set_position([0.5, 1.05])
+    xlabel("$x$")
+    ylabel(r"$\rho$, $p$")
+    legend(loc="best", prop=dict(size=18))
+    xlim([-0.05,1.05])
+    grid()
+    gcf().subplots_adjust(left=0.15)
+    savefig("pics/sod-n5-k80.pdf")
+
+
+
+
+def make_skyline_pics():
+
+    def make_plots(func, what, draw_baseline=False, order=10):
+        from hedge.discretization.local import IntervalDiscretization
+        el = IntervalDiscretization(order)
+        nodes = numpy.array(el.unit_nodes()).reshape(-1)
+        fine_x_nodes = numpy.linspace(nodes[0], nodes[-1], 100)
+
+        values = numpy.array([func(el, node) for node in nodes])
         modes = la.solve(el.vandermonde(), values)
 
         mode_nums = numpy.arange(0, len(modes), dtype=numpy.float64)
@@ -216,15 +247,17 @@ def make_skyline_pics():
 
     from random import random, seed
     seed(30)
-    last_mode = el.basis_functions()[-1]
-    make_plots(lambda x: last_mode([x]), "last-mode")
+    make_plots(lambda el, x: el.basis_functions()[-1]([x]), "last-mode")
 
-    make_plots(lambda x: numpy.cos(3+numpy.sin(1.3*x)), "exp-sin")
-    make_plots(lambda x: numpy.sin(numpy.pi*x), "sin")
-    make_plots(lambda x: 1 if x >= 0 else 0, "jump")
-    make_plots(lambda x: x if x >= 0 else 0, "kink")
-    make_plots(lambda x: x**2 if x >= 0 else 0, "c1")
-    make_plots(lambda x: 1+(random()-0.5)*1e-3, "noisy-one",
+    make_plots(lambda el, x: numpy.cos(3+numpy.sin(1.3*x)), "exp-sin")
+    make_plots(lambda el, x: numpy.sin(numpy.pi*x), "sin")
+    make_plots(lambda el, x: 1 if x >= 0 else 0, "jump")
+    make_plots(lambda el, x: 1 if x >= 0.9 else 0, "offset-jump", order=20)
+    make_plots(lambda el, x: (x-0.8) if x >= 0.8 else 0, "offset-kink", order=20)
+    make_plots(lambda el, x: (x-0.8)**2 if x >= 0.8 else 0, "offset-c1", order=20)
+    make_plots(lambda el, x: x if x >= 0 else 0, "kink")
+    make_plots(lambda el, x: x**2 if x >= 0 else 0, "c1")
+    make_plots(lambda el, x: 1+(random()-0.5)*1e-3, "noisy-one",
             draw_baseline=True)
 
 
@@ -306,8 +339,6 @@ def make_adv_smooth_pics(base_dir, out_pic, long_term=False, el_bdry=False):
         xmin, xmax = xlim()
         el_cnt = get_par("element_count")
         el_starts = numpy.linspace(xmin, xmax, el_cnt+1)
-        print len(el_starts)
-        print el_starts
 
         from matplotlib.ticker import FixedLocator
         gca().xaxis.set_minor_locator(FixedLocator(el_starts))
@@ -332,6 +363,9 @@ def make_adv_smooth_pics(base_dir, out_pic, long_term=False, el_bdry=False):
 
 
 if __name__ == "__main__":
+    make_skyline_pics()
+    import sys; sys.exit()
+
     rc("font", size=22)
     make_adv_el_trans_pic()
     make_adv_dt_pic()
@@ -347,4 +381,4 @@ if __name__ == "__main__":
     make_shock_wrinkles_pic()
     make_shu_osher_pic()
     make_lax_pic()
-    make_skyline_pics()
+    make_sod_pic()

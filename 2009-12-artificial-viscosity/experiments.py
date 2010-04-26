@@ -129,8 +129,8 @@ def euler_sod_convergence_in_k():
     O = ConstructorPlaceholder
     timestamp = get_timestamp()
 
-    for order in [4]:
-        for n_elements in [20, 40, 80, 160, 320, 640, 1280]:
+    for order in [5]:
+        for n_elements in [20, 40, 80, 160, 320]:
 
             for viscosity_scale in [0.4]:
                 for smoother in [
